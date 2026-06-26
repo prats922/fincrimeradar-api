@@ -21,8 +21,8 @@ adverse_engine = AdverseMediaEngine()
 @app.on_event("startup")
 async def startup():
     print("Loading screening data...")
-    sanctions_engine.load()
     pep_engine.load()
+    sanctions_engine.load()
     print("Screening engines ready.")
     asyncio.create_task(auto_refresh())
 
@@ -32,8 +32,8 @@ async def auto_refresh():
         await asyncio.sleep(3600)  # check every hour
         try:
             from screening import cache_is_fresh
-            sanctions_cache = "/tmp/sanctions_v2.json"
-            pep_cache = "/tmp/peps_v2.json"
+            sanctions_cache = "/tmp/sanctions_v3.json"
+            pep_cache = "/tmp/peps_v3.json"
             if not cache_is_fresh(sanctions_cache):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
