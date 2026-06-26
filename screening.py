@@ -100,11 +100,18 @@ class SanctionsEngine:
                 print(f"Loaded {len(records)} sanctions records")
             except Exception as e:
                 print(f"Sanctions load failed: {e}")
+                import traceback
+                traceback.print_exc()
                 self.records = self._fallback()
 
         self.name_index = [(clean(n), i, n) for i, r in enumerate(self.records) for n in r["names"]]
         gc.collect()
-        print(f"Sanctions index: {len(self.name_index)} entries")
+        try:
+            import resource
+            mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            print(f"Sanctions index: {len(self.name_index)} entries | Memory used: {mem//1024}MB")
+        except:
+            print(f"Sanctions index: {len(self.name_index)} entries")
 
     def _fallback(self):
         return [
@@ -211,11 +218,18 @@ class PEPEngine:
                 print(f"Loaded {len(records)} PEP records")
             except Exception as e:
                 print(f"PEP load failed: {e}")
+                import traceback
+                traceback.print_exc()
                 self.records = self._fallback()
 
         self.name_index = [(clean(n), i, n) for i, r in enumerate(self.records) for n in r["names"]]
         gc.collect()
-        print(f"PEP index: {len(self.name_index)} entries")
+        try:
+            import resource
+            mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            print(f"PEP index: {len(self.name_index)} entries | Memory used: {mem//1024}MB")
+        except:
+            print(f"PEP index: {len(self.name_index)} entries")
 
     def _fallback(self):
         return [
