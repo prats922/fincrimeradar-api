@@ -1,9 +1,23 @@
-import json, os, re, requests, gc
+import json, os, re, requests, gc, time
+from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 
 OPENSANCTIONS_URL = "https://data.opensanctions.org/datasets/latest/sanctions/entities.ftm.json"
 PEP_URL = "https://data.opensanctions.org/datasets/latest/peps/entities.ftm.json"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+CACHE_TTL_HOURS = 24  # refresh data every 24 hours
+
+def cache_is_fresh(cache_path: str) -> bool:
+    """Check if cache file exists and is less than 24 hours old."""
+    if not os.path.exists(cache_path):
+        return False
+    modified = datetime.fromtimestamp(os.path.getmtime(cache_path))
+    age = datetime.now() - modified
+    fresh = age < timedelta(hours=CACHE_TTL_HOURS)
+    if not fresh:
+        print(f"Cache {cache_path} is {age.seconds//3600}h old — refreshing")
+    return fresh
 
 MAX_SANCTIONS = 12000
 MAX_PEPS = 12000
@@ -38,8 +52,8 @@ class SanctionsEngine:
 
     def load(self):
         cache = "/tmp/sanctions_lite.json"
-        if os.path.exists(cache):
-            print("Loading sanctions from cache...")
+        if cache_is_fresh(cache):
+            print("Loading sanctions from fresh cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
@@ -138,8 +152,8 @@ class PEPEngine:
 
     def load(self):
         cache = "/tmp/peps_lite.json"
-        if os.path.exists(cache):
-            print("Loading PEP data from cache...")
+        if cache_is_fresh(cache):
+            print("Loading PEP data from fresh cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
