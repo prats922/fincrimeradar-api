@@ -1,34 +1,34 @@
-import json, os, re, requests
+import json, os, re, requests, gc
 from rapidfuzz import fuzz, process
-from datetime import datetime
 
 OPENSANCTIONS_URL = "https://data.opensanctions.org/datasets/latest/sanctions/entities.ftm.json"
 PEP_URL = "https://data.opensanctions.org/datasets/latest/peps/entities.ftm.json"
-
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+MAX_SANCTIONS = 12000
+MAX_PEPS = 12000
 
 def clean(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().upper())
 
-def safe_get(obj, *keys, default=""):
-    for k in keys:
-        if isinstance(obj, dict):
-            obj = obj.get(k, default)
-        elif isinstance(obj, list):
-            return obj
-        else:
-            return default
-    return obj if obj else default
-
 def extract_names(props: dict) -> list:
     names = []
-    for field in ["name", "alias", "weakAlias"]:
+    for field in ["name", "alias"]:
         val = props.get(field, [])
         if isinstance(val, list):
-            names.extend([v for v in val if v])
+            names.extend([v for v in val if v and len(v) > 1])
         elif val:
             names.append(val)
-    return list(set(names))
+    return list(set(names))[:4]
+
+def dataset_label(ds: str) -> str:
+    labels = {
+        "us_ofac_sdn": "OFAC SDN (US)", "us_ofac_cons": "OFAC Consolidated (US)",
+        "eu_fsf": "EU Financial Sanctions", "un_sc_sanctions": "UN Security Council",
+        "gb_hmt_sanctions": "OFSI (UK)", "au_dfat_sanctions": "DFAT (Australia)",
+        "ca_osfi_sanctions": "OSFI (Canada)", "ch_seco_sanctions": "SECO (Switzerland)",
+    }
+    return labels.get(ds, ds.upper().replace("_", " "))
 
 
 class SanctionsEngine:
@@ -37,37 +37,37 @@ class SanctionsEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/sanctions.json"
+        cache = "/tmp/sanctions_lite.json"
         if os.path.exists(cache):
             print("Loading sanctions from cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
-            print("Downloading sanctions data from OpenSanctions...")
+            print("Downloading sanctions data...")
             try:
-                resp = requests.get(OPENSANCTIONS_URL, stream=True, timeout=60)
+                resp = requests.get(OPENSANCTIONS_URL, stream=True, timeout=120)
                 records = []
                 for line in resp.iter_lines():
                     if not line: continue
+                    if len(records) >= MAX_SANCTIONS: break
                     try:
                         entity = json.loads(line)
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
                         records.append({
-                            "id": entity.get("id", ""),
-                            "schema": entity.get("schema", ""),
+                            "id": entity.get("id", "")[:20],
+                            "schema": entity.get("schema", "")[:20],
                             "names": names,
-                            "primary_name": names[0] if names else "",
-                            "datasets": entity.get("datasets", []),
-                            "nationality": props.get("nationality", []),
-                            "country": props.get("country", []),
-                            "birthDate": props.get("birthDate", []),
-                            "position": props.get("position", []),
-                            "topics": entity.get("topics", []),
-                            "program": props.get("program", []),
-                            "reason": props.get("reason", []),
-                            "sourceUrl": props.get("sourceUrl", []),
+                            "primary_name": names[0],
+                            "datasets": entity.get("datasets", [])[:4],
+                            "nationality": props.get("nationality", [])[:3],
+                            "country": props.get("country", [])[:3],
+                            "birthDate": props.get("birthDate", [])[:2],
+                            "position": props.get("position", [])[:2],
+                            "program": props.get("program", [])[:3],
+                            "reason": props.get("reason", [])[:1],
+                            "topics": entity.get("topics", [])[:3],
                         })
                     except: continue
                 self.records = records
@@ -75,52 +75,49 @@ class SanctionsEngine:
                     json.dump(records, f)
                 print(f"Loaded {len(records)} sanctions records")
             except Exception as e:
-                print(f"Failed to load sanctions: {e}")
-                self.records = self._fallback_records()
+                print(f"Sanctions load failed: {e}")
+                self.records = self._fallback()
 
         self.name_index = [(clean(n), i, n) for i, r in enumerate(self.records) for n in r["names"]]
-        print(f"Sanctions index built: {len(self.name_index)} name entries")
+        gc.collect()
+        print(f"Sanctions index: {len(self.name_index)} entries")
 
-    def _fallback_records(self):
+    def _fallback(self):
         return [
-            {"id": "fallback-1", "schema": "Person", "names": ["VLADIMIR PUTIN"], "primary_name": "VLADIMIR PUTIN",
-             "datasets": ["us_ofac_sdn"], "nationality": ["RU"], "country": ["RU"], "birthDate": ["1952-10-07"],
-             "position": ["President of Russia"], "topics": ["sanction"], "program": ["UKRAINE-EO13685"],
-             "reason": ["Senior government official"], "sourceUrl": []},
-            {"id": "fallback-2", "schema": "Organization", "names": ["WAGNER GROUP", "PMC WAGNER"],
-             "primary_name": "WAGNER GROUP", "datasets": ["us_ofac_sdn", "eu_fsf"], "nationality": [],
-             "country": ["RU"], "birthDate": [], "position": [], "topics": ["sanction"],
-             "program": ["RUSSIA-EO14024"], "reason": ["Private military company"], "sourceUrl": []},
+            {"id": "f1", "schema": "Person", "names": ["VLADIMIR PUTIN"], "primary_name": "VLADIMIR PUTIN",
+             "datasets": ["us_ofac_sdn"], "nationality": ["RU"], "country": ["RU"],
+             "birthDate": ["1952-10-07"], "position": ["President of Russia"],
+             "program": ["UKRAINE-EO13685"], "reason": ["Senior government official"], "topics": ["sanction"]},
+            {"id": "f2", "schema": "Organization", "names": ["WAGNER GROUP", "PMC WAGNER"],
+             "primary_name": "WAGNER GROUP", "datasets": ["us_ofac_sdn", "eu_fsf"],
+             "nationality": [], "country": ["RU"], "birthDate": [], "position": [],
+             "program": ["RUSSIA-EO14024"], "reason": ["Private military company"], "topics": ["sanction"]},
+            {"id": "f3", "schema": "Person", "names": ["KIM JONG UN", "KIM JONG-UN"],
+             "primary_name": "KIM JONG UN", "datasets": ["us_ofac_sdn", "un_sc_sanctions"],
+             "nationality": ["KP"], "country": ["KP"], "birthDate": ["1984-01-08"],
+             "position": ["Supreme Leader of North Korea"], "program": ["DPRK3"],
+             "reason": ["Head of state"], "topics": ["sanction"]},
         ]
 
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
-        if not self.name_index:
-            return []
-
-        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=20, score_cutoff=threshold)
-        seen_ids = set()
-        results = []
-        for match_name, score, idx in matches:
+        if not self.name_index: return []
+        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=15, score_cutoff=threshold)
+        seen, results = set(), []
+        for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
             record = self.records[orig_idx]
             rid = record["id"]
-            if rid in seen_ids: continue
-            seen_ids.add(rid)
-
-            list_names = []
-            for ds in record.get("datasets", []):
-                label = self._dataset_label(ds)
-                if label: list_names.append(label)
-
+            if rid in seen: continue
+            seen.add(rid)
+            lists = [dataset_label(ds) for ds in record.get("datasets", [])]
             results.append({
-                "id": rid,
-                "score": round(score),
+                "id": rid, "score": round(score),
                 "matched_name": self.name_index[idx][2],
                 "primary_name": record["primary_name"],
-                "aliases": [n for n in record["names"] if n != record["primary_name"]][:5],
+                "aliases": [n for n in record["names"] if n != record["primary_name"]][:4],
                 "entity_type": record.get("schema", "Unknown"),
-                "sanctions_lists": list_names if list_names else record.get("datasets", []),
+                "sanctions_lists": lists or record.get("datasets", []),
                 "program": record.get("program", []),
                 "nationality": record.get("nationality", []),
                 "country": record.get("country", []),
@@ -129,24 +126,7 @@ class SanctionsEngine:
                 "reason": record.get("reason", []),
                 "topics": record.get("topics", []),
             })
-
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:10]
-
-    def _dataset_label(self, ds: str) -> str:
-        labels = {
-            "us_ofac_sdn": "OFAC SDN (US)",
-            "us_ofac_cons": "OFAC Consolidated (US)",
-            "eu_fsf": "EU Financial Sanctions",
-            "un_sc_sanctions": "UN Security Council",
-            "gb_hmt_sanctions": "OFSI (UK)",
-            "au_dfat_sanctions": "DFAT (Australia)",
-            "ca_osfi_sanctions": "OSFI (Canada)",
-            "ch_seco_sanctions": "SECO (Switzerland)",
-            "fr_gels_avoirs": "French Sanctions",
-            "ru_acf_sanctions": "Russia ACF",
-        }
-        return labels.get(ds, ds.upper().replace("_", " "))
+        return sorted(results, key=lambda x: x["score"], reverse=True)[:8]
 
     def count(self): return len(self.records)
 
@@ -157,18 +137,19 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps.json"
+        cache = "/tmp/peps_lite.json"
         if os.path.exists(cache):
             print("Loading PEP data from cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
-            print("Downloading PEP data from OpenSanctions...")
+            print("Downloading PEP data...")
             try:
-                resp = requests.get(PEP_URL, stream=True, timeout=60)
+                resp = requests.get(PEP_URL, stream=True, timeout=120)
                 records = []
                 for line in resp.iter_lines():
                     if not line: continue
+                    if len(records) >= MAX_PEPS: break
                     try:
                         entity = json.loads(line)
                         if entity.get("schema") not in ("Person", "Organization"): continue
@@ -176,79 +157,76 @@ class PEPEngine:
                         names = extract_names(props)
                         if not names: continue
                         records.append({
-                            "id": entity.get("id", ""),
+                            "id": entity.get("id", "")[:20],
                             "schema": entity.get("schema", ""),
                             "names": names,
-                            "primary_name": names[0] if names else "",
-                            "position": props.get("position", []),
-                            "nationality": props.get("nationality", []),
-                            "country": props.get("country", []),
-                            "birthDate": props.get("birthDate", []),
-                            "topics": entity.get("topics", []),
-                            "datasets": entity.get("datasets", []),
+                            "primary_name": names[0],
+                            "position": props.get("position", [])[:2],
+                            "nationality": props.get("nationality", [])[:3],
+                            "country": props.get("country", [])[:3],
+                            "birthDate": props.get("birthDate", [])[:2],
+                            "topics": entity.get("topics", [])[:3],
                         })
                     except: continue
-                self.records = records[:50000]
+                self.records = records
                 with open(cache, "w") as f:
-                    json.dump(self.records, f)
-                print(f"Loaded {len(self.records)} PEP records")
+                    json.dump(records, f)
+                print(f"Loaded {len(records)} PEP records")
             except Exception as e:
-                print(f"Failed to load PEP: {e}")
-                self.records = self._fallback_records()
+                print(f"PEP load failed: {e}")
+                self.records = self._fallback()
 
         self.name_index = [(clean(n), i, n) for i, r in enumerate(self.records) for n in r["names"]]
-        print(f"PEP index built: {len(self.name_index)} name entries")
+        gc.collect()
+        print(f"PEP index: {len(self.name_index)} entries")
 
-    def _fallback_records(self):
+    def _fallback(self):
         return [
-            {"id": "pep-fallback-1", "schema": "Person", "names": ["RISHI SUNAK"],
+            {"id": "pep1", "schema": "Person", "names": ["RISHI SUNAK"],
              "primary_name": "RISHI SUNAK", "position": ["Prime Minister of the United Kingdom"],
              "nationality": ["GB"], "country": ["GB"], "birthDate": ["1980-05-12"],
-             "topics": ["role.pep"], "datasets": ["gb_coh_psc"]},
+             "topics": ["role.pep", "role.head"]},
+            {"id": "pep2", "schema": "Person", "names": ["KEIR STARMER"],
+             "primary_name": "KEIR STARMER", "position": ["Prime Minister of the United Kingdom"],
+             "nationality": ["GB"], "country": ["GB"], "birthDate": ["1962-09-02"],
+             "topics": ["role.pep", "role.head"]},
         ]
 
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
         if not self.name_index: return []
-
-        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=20, score_cutoff=threshold)
-        seen_ids = set()
-        results = []
-        for match_name, score, idx in matches:
+        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=15, score_cutoff=threshold)
+        seen, results = set(), []
+        for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
             record = self.records[orig_idx]
             rid = record["id"]
-            if rid in seen_ids: continue
-            seen_ids.add(rid)
-
-            pep_categories = []
-            for topic in record.get("topics", []):
-                if "head" in topic: pep_categories.append("Head of State")
-                elif "gov" in topic: pep_categories.append("Government Official")
-                elif "role.pep" in topic: pep_categories.append("PEP")
-                elif "leg" in topic: pep_categories.append("Legislator")
-                elif "diplo" in topic: pep_categories.append("Diplomat")
-                elif "judge" in topic: pep_categories.append("Judiciary")
-                elif "mil" in topic: pep_categories.append("Military")
-                elif "soe" in topic: pep_categories.append("State Owned Enterprise")
-
+            if rid in seen: continue
+            seen.add(rid)
+            pep_cats = []
+            for t in record.get("topics", []):
+                if "head" in t: pep_cats.append("Head of State")
+                elif "gov" in t: pep_cats.append("Government Official")
+                elif "leg" in t: pep_cats.append("Legislator")
+                elif "diplo" in t: pep_cats.append("Diplomat")
+                elif "judge" in t: pep_cats.append("Judiciary")
+                elif "mil" in t: pep_cats.append("Military")
+                elif "soe" in t: pep_cats.append("State Owned Enterprise")
+                elif "pep" in t: pep_cats.append("PEP")
             results.append({
-                "id": rid,
-                "score": round(score),
+                "id": rid, "score": round(score),
                 "matched_name": self.name_index[idx][2],
                 "primary_name": record["primary_name"],
-                "aliases": [n for n in record["names"] if n != record["primary_name"]][:5],
+                "aliases": [n for n in record["names"] if n != record["primary_name"]][:3],
                 "entity_type": record.get("schema", "Person"),
                 "position": record.get("position", []),
                 "nationality": record.get("nationality", []),
                 "country": record.get("country", []),
                 "birth_date": record.get("birthDate", []),
-                "pep_categories": list(set(pep_categories)) if pep_categories else ["PEP"],
+                "pep_categories": list(set(pep_cats)) or ["PEP"],
                 "topics": record.get("topics", []),
             })
-
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:10]
+        return sorted(results, key=lambda x: x["score"], reverse=True)[:8]
 
     def count(self): return len(self.records)
 
@@ -257,27 +235,20 @@ class AdverseMediaEngine:
     def search(self, query: str) -> list:
         try:
             params = {
-                "query": f'"{query}" financial crime OR fraud OR money laundering OR sanctions OR corruption OR bribery',
-                "mode": "ArtList",
-                "maxrecords": "10",
-                "format": "json",
-                "timespan": "12m",
-                "sort": "DateDesc",
+                "query": f'"{query}" "money laundering" OR "fraud" OR "sanctions" OR "corruption" OR "bribery" OR "financial crime"',
+                "mode": "ArtList", "maxrecords": "8", "format": "json",
+                "timespan": "12m", "sort": "DateDesc",
             }
             resp = requests.get(GDELT_URL, params=params, timeout=10)
-            data = resp.json()
-            articles = data.get("articles", [])
-            results = []
-            for a in articles[:8]:
-                results.append({
-                    "title": a.get("title", ""),
-                    "url": a.get("url", ""),
-                    "source": a.get("domain", ""),
-                    "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
-                    "language": a.get("language", ""),
-                    "tone": round(float(a.get("tone", 0)), 2),
-                })
-            return results
+            articles = resp.json().get("articles", [])
+            return [{
+                "title": a.get("title", ""),
+                "url": a.get("url", ""),
+                "source": a.get("domain", ""),
+                "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
+                "language": a.get("language", "English"),
+                "tone": round(float(a.get("tone", 0)), 2),
+            } for a in articles[:6]]
         except Exception as e:
-            print(f"Adverse media search failed: {e}")
+            print(f"Adverse media error: {e}")
             return []
