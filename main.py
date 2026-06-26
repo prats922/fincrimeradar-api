@@ -33,7 +33,7 @@ async def auto_refresh():
         try:
             from screening import cache_is_fresh
             sanctions_cache = "/tmp/sanctions_v3.json"
-            pep_cache = "/tmp/peps_v3.json"
+            pep_cache = "/tmp/peps_v4.json"
             if not cache_is_fresh(sanctions_cache):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
