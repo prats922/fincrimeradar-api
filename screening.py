@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 
 OPENSANCTIONS_URL = "https://data.opensanctions.org/datasets/latest/sanctions/entities.ftm.json"
-PEP_URL = "https://data.opensanctions.org/datasets/latest/every_politician/entities.ftm.json"
+# PEP data extracted from sanctions dataset + built-in database
+PEP_WIKIDATA_URL = "https://query.wikidata.org/sparql"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 CACHE_TTL_HOURS = 24  # refresh data every 24 hours
@@ -168,35 +169,42 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v4.json"
+        cache = "/tmp/peps_v5.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
-            print("Downloading PEP data...")
+            print("Building PEP database from built-in + sanctions cross-reference...")
             try:
-                resp = requests.get(PEP_URL, stream=True, timeout=120)
+                # Strategy: download sanctions dataset and extract PEP-tagged entities
+                # This works because sanctions URL is accessible from Render
+                sanctions_url = OPENSANCTIONS_URL
+                resp = requests.get(sanctions_url, stream=True, timeout=120)
                 records = []
+                pep_schemas = {"Person", "Organization", "Company", "PublicBody", "LegalEntity"}
+                pep_topics = {"role.pep", "role.rca", "role.pol", "role.gov",
+                             "role.leg", "role.diplo", "role.judge", "role.mil",
+                             "role.soe", "role.head", "role.mep"}
+
                 for line in resp.iter_lines():
                     if not line: continue
                     if len(records) >= MAX_PEPS: break
                     try:
                         entity = json.loads(line)
                         schema = entity.get("schema", "")
+                        if schema not in pep_schemas: continue
 
-                        # Only load Person and Organization PEPs
-                        if schema not in ("Person", "Organization", "Company",
-                                         "PublicBody", "LegalEntity"):
-                            continue
+                        topics = set(entity.get("topics", []))
+                        # Only include if has a PEP/role topic
+                        if not topics.intersection(pep_topics): continue
 
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
 
-                        topics = entity.get("topics", [])
                         records.append({
-                            "id": entity.get("id", "")[:20],
+                            "id": "pep_" + entity.get("id", "")[:16],
                             "schema": schema,
                             "names": names,
                             "primary_name": names[0],
@@ -204,18 +212,30 @@ class PEPEngine:
                             "nationality": props.get("nationality", [])[:2],
                             "country": props.get("country", [])[:2],
                             "birthDate": props.get("birthDate", [])[:1],
-                            "topics": topics[:3],
+                            "topics": list(topics)[:3],
                         })
                     except: continue
-                self.records = records
+
+                # Add built-in PEP database as supplement
+                records.extend(self._builtin_peps())
+                # Deduplicate by name
+                seen_names = set()
+                deduped = []
+                for r in records:
+                    key = r["primary_name"].upper()
+                    if key not in seen_names:
+                        seen_names.add(key)
+                        deduped.append(r)
+                self.records = deduped
+
                 with open(cache, "w") as f:
-                    json.dump(records, f)
-                print(f"Loaded {len(records)} PEP records")
+                    json.dump(self.records, f)
+                print(f"Loaded {len(self.records)} PEP records (from sanctions cross-ref + built-in)")
             except Exception as e:
                 print(f"PEP load failed: {e}")
                 import traceback
                 traceback.print_exc()
-                self.records = self._fallback()
+                self.records = self._builtin_peps()
 
         self.name_index = [(clean(n), i, n) for i, r in enumerate(self.records) for n in r["names"]]
         gc.collect()
@@ -226,17 +246,108 @@ class PEPEngine:
         except:
             print(f"PEP index: {len(self.name_index)} entries")
 
-    def _fallback(self):
+    def _builtin_peps(self):
+        """Built-in PEP database covering major world leaders and officials."""
         return [
-            {"id": "pep1", "schema": "Person", "names": ["RISHI SUNAK"],
-             "primary_name": "RISHI SUNAK", "position": ["Prime Minister of the United Kingdom"],
-             "nationality": ["GB"], "country": ["GB"], "birthDate": ["1980-05-12"],
-             "topics": ["role.pep", "role.head"]},
-            {"id": "pep2", "schema": "Person", "names": ["KEIR STARMER"],
+            {"id": "pep_gb01", "schema": "Person", "names": ["KEIR STARMER", "SIR KEIR STARMER"],
              "primary_name": "KEIR STARMER", "position": ["Prime Minister of the United Kingdom"],
              "nationality": ["GB"], "country": ["GB"], "birthDate": ["1962-09-02"],
-             "topics": ["role.pep", "role.head"]},
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_gb02", "schema": "Person", "names": ["RISHI SUNAK"],
+             "primary_name": "RISHI SUNAK", "position": ["Former Prime Minister of the United Kingdom"],
+             "nationality": ["GB"], "country": ["GB"], "birthDate": ["1980-05-12"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_us01", "schema": "Person", "names": ["JOE BIDEN", "JOSEPH BIDEN"],
+             "primary_name": "JOE BIDEN", "position": ["Former President of the United States"],
+             "nationality": ["US"], "country": ["US"], "birthDate": ["1942-11-20"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_us02", "schema": "Person", "names": ["DONALD TRUMP", "DONALD J TRUMP"],
+             "primary_name": "DONALD TRUMP", "position": ["President of the United States"],
+             "nationality": ["US"], "country": ["US"], "birthDate": ["1946-06-14"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_ru01", "schema": "Person", "names": ["VLADIMIR PUTIN", "PUTIN VLADIMIR"],
+             "primary_name": "VLADIMIR PUTIN", "position": ["President of Russia"],
+             "nationality": ["RU"], "country": ["RU"], "birthDate": ["1952-10-07"],
+             "topics": ["role.head", "role.pep", "sanction"]},
+            {"id": "pep_cn01", "schema": "Person", "names": ["XI JINPING"],
+             "primary_name": "XI JINPING", "position": ["President of China"],
+             "nationality": ["CN"], "country": ["CN"], "birthDate": ["1953-06-15"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_fr01", "schema": "Person", "names": ["EMMANUEL MACRON"],
+             "primary_name": "EMMANUEL MACRON", "position": ["President of France"],
+             "nationality": ["FR"], "country": ["FR"], "birthDate": ["1977-12-21"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_de01", "schema": "Person", "names": ["OLAF SCHOLZ"],
+             "primary_name": "OLAF SCHOLZ", "position": ["Chancellor of Germany"],
+             "nationality": ["DE"], "country": ["DE"], "birthDate": ["1958-06-14"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_in01", "schema": "Person", "names": ["NARENDRA MODI"],
+             "primary_name": "NARENDRA MODI", "position": ["Prime Minister of India"],
+             "nationality": ["IN"], "country": ["IN"], "birthDate": ["1950-09-17"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_tr01", "schema": "Person", "names": ["RECEP TAYYIP ERDOGAN", "ERDOGAN"],
+             "primary_name": "RECEP TAYYIP ERDOGAN", "position": ["President of Turkey"],
+             "nationality": ["TR"], "country": ["TR"], "birthDate": ["1954-02-26"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_sa01", "schema": "Person", "names": ["MOHAMMED BIN SALMAN", "MBS"],
+             "primary_name": "MOHAMMED BIN SALMAN",
+             "position": ["Crown Prince of Saudi Arabia", "Prime Minister of Saudi Arabia"],
+             "nationality": ["SA"], "country": ["SA"], "birthDate": ["1985-08-31"],
+             "topics": ["role.gov", "role.pep"]},
+            {"id": "pep_br01", "schema": "Person", "names": ["LUIZ INACIO LULA DA SILVA", "LULA"],
+             "primary_name": "LUIZ INACIO LULA DA SILVA", "position": ["President of Brazil"],
+             "nationality": ["BR"], "country": ["BR"], "birthDate": ["1945-10-27"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_za01", "schema": "Person", "names": ["CYRIL RAMAPHOSA"],
+             "primary_name": "CYRIL RAMAPHOSA", "position": ["President of South Africa"],
+             "nationality": ["ZA"], "country": ["ZA"], "birthDate": ["1952-11-17"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_ae01", "schema": "Person",
+             "names": ["MOHAMMED BIN ZAYED", "MBZ", "MOHAMED BIN ZAYED AL NAHYAN"],
+             "primary_name": "MOHAMMED BIN ZAYED AL NAHYAN",
+             "position": ["President of the UAE"],
+             "nationality": ["AE"], "country": ["AE"], "birthDate": ["1961-03-11"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_ng01", "schema": "Person", "names": ["BOLA TINUBU"],
+             "primary_name": "BOLA TINUBU", "position": ["President of Nigeria"],
+             "nationality": ["NG"], "country": ["NG"], "birthDate": ["1952-03-29"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_pk01", "schema": "Person", "names": ["SHEHBAZ SHARIF"],
+             "primary_name": "SHEHBAZ SHARIF", "position": ["Prime Minister of Pakistan"],
+             "nationality": ["PK"], "country": ["PK"], "birthDate": ["1951-09-23"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_eg01", "schema": "Person", "names": ["ABDEL FATTAH EL-SISI", "AL-SISI"],
+             "primary_name": "ABDEL FATTAH EL-SISI", "position": ["President of Egypt"],
+             "nationality": ["EG"], "country": ["EG"], "birthDate": ["1954-11-19"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_il01", "schema": "Person", "names": ["BENJAMIN NETANYAHU", "BIBI NETANYAHU"],
+             "primary_name": "BENJAMIN NETANYAHU", "position": ["Prime Minister of Israel"],
+             "nationality": ["IL"], "country": ["IL"], "birthDate": ["1949-10-21"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_ua01", "schema": "Person", "names": ["VOLODYMYR ZELENSKY", "ZELENSKYY"],
+             "primary_name": "VOLODYMYR ZELENSKY", "position": ["President of Ukraine"],
+             "nationality": ["UA"], "country": ["UA"], "birthDate": ["1978-01-25"],
+             "topics": ["role.head", "role.pep"]},
+            {"id": "pep_by01", "schema": "Person", "names": ["ALEXANDER LUKASHENKO"],
+             "primary_name": "ALEXANDER LUKASHENKO", "position": ["President of Belarus"],
+             "nationality": ["BY"], "country": ["BY"], "birthDate": ["1954-08-30"],
+             "topics": ["role.head", "role.pep", "sanction"]},
+            {"id": "pep_ir01", "schema": "Person", "names": ["ALI KHAMENEI", "AYATOLLAH KHAMENEI"],
+             "primary_name": "ALI KHAMENEI", "position": ["Supreme Leader of Iran"],
+             "nationality": ["IR"], "country": ["IR"], "birthDate": ["1939-04-19"],
+             "topics": ["role.head", "role.pep", "sanction"]},
+            {"id": "pep_ve01", "schema": "Person", "names": ["NICOLAS MADURO"],
+             "primary_name": "NICOLAS MADURO", "position": ["President of Venezuela"],
+             "nationality": ["VE"], "country": ["VE"], "birthDate": ["1962-11-23"],
+             "topics": ["role.head", "role.pep", "sanction"]},
+            {"id": "pep_sy01", "schema": "Person", "names": ["BASHAR AL-ASSAD", "BASHAR ASSAD"],
+             "primary_name": "BASHAR AL-ASSAD", "position": ["Former President of Syria"],
+             "nationality": ["SY"], "country": ["SY"], "birthDate": ["1965-09-11"],
+             "topics": ["role.head", "role.pep", "sanction"]},
         ]
+
+    def _fallback(self):
+        return self._builtin_peps()
 
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
