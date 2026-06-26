@@ -19,8 +19,8 @@ def cache_is_fresh(cache_path: str) -> bool:
         print(f"Cache {cache_path} is {age.seconds//3600}h old — refreshing")
     return fresh
 
-MAX_SANCTIONS = 50000
-MAX_PEPS = 40000
+MAX_SANCTIONS = 25000
+MAX_PEPS = 15000
 
 def clean(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().upper())
@@ -51,7 +51,7 @@ class SanctionsEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/sanctions_v2.json"
+        cache = "/tmp/sanctions_v3.json"
         if cache_is_fresh(cache):
             print("Loading sanctions from fresh cache...")
             with open(cache) as f:
@@ -161,7 +161,7 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v2.json"
+        cache = "/tmp/peps_v3.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
