@@ -233,22 +233,48 @@ class PEPEngine:
 
 class AdverseMediaEngine:
     def search(self, query: str) -> list:
-        try:
-            params = {
-                "query": f'"{query}" "money laundering" OR "fraud" OR "sanctions" OR "corruption" OR "bribery" OR "financial crime"',
-                "mode": "ArtList", "maxrecords": "8", "format": "json",
-                "timespan": "12m", "sort": "DateDesc",
-            }
-            resp = requests.get(GDELT_URL, params=params, timeout=10)
-            articles = resp.json().get("articles", [])
-            return [{
-                "title": a.get("title", ""),
-                "url": a.get("url", ""),
-                "source": a.get("domain", ""),
-                "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
-                "language": a.get("language", "English"),
-                "tone": round(float(a.get("tone", 0)), 2),
-            } for a in articles[:6]]
-        except Exception as e:
-            print(f"Adverse media error: {e}")
-            return []
+        strategies = [
+            f'{query} sanctions OR fraud OR "money laundering" OR corruption OR bribery',
+            f'{query} "financial crime" OR "regulatory action" OR "criminal charges" OR convicted',
+            f'{query} crime OR illegal OR investigation OR arrested',
+        ]
+        timespans = ["12m", "6m", "3m"]
+
+        for i, q in enumerate(strategies):
+            try:
+                params = {
+                    "query": q,
+                    "mode": "ArtList",
+                    "maxrecords": "10",
+                    "format": "json",
+                    "timespan": timespans[i],
+                    "sort": "DateDesc",
+                }
+                resp = requests.get(GDELT_URL, params=params, timeout=12)
+                if resp.status_code != 200:
+                    continue
+                articles = resp.json().get("articles", [])
+                if not articles:
+                    continue
+
+                seen, results = set(), []
+                for a in articles:
+                    domain = a.get("domain", "")
+                    if domain in seen: continue
+                    seen.add(domain)
+                    tone = float(a.get("tone", 0))
+                    results.append({
+                        "title": a.get("title", "").strip(),
+                        "url": a.get("url", ""),
+                        "source": domain,
+                        "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
+                        "language": a.get("language", "English"),
+                        "tone": round(tone, 2),
+                        "tone_label": "Negative" if tone < -2 else "Neutral" if tone < 2 else "Positive",
+                    })
+                if results:
+                    return results[:8]
+            except Exception as e:
+                print(f"Adverse media strategy {i+1} failed: {e}")
+                continue
+        return []
