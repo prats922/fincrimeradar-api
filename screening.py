@@ -233,38 +233,53 @@ class PEPEngine:
 
 class AdverseMediaEngine:
     def search(self, query: str) -> list:
-        strategies = [
-            f'{query} sanctions OR fraud OR "money laundering" OR corruption OR bribery',
-            f'{query} "financial crime" OR "regulatory action" OR "criminal charges" OR convicted',
-            f'{query} crime OR illegal OR investigation OR arrested',
-        ]
-        timespans = ["12m", "6m", "3m"]
+        # GDELT works best with simple unquoted keyword queries
+        # Build name tokens for flexible matching
+        name_parts = query.strip().split()
+        name_query = " ".join(name_parts[:3])  # max 3 name tokens
 
-        for i, q in enumerate(strategies):
+        strategies = [
+            # Strategy 1: name + sanctions keyword, 12 months
+            {"q": f"{name_query} sanctions", "timespan": "12m"},
+            # Strategy 2: name + fraud/crime, 12 months
+            {"q": f"{name_query} fraud corruption", "timespan": "12m"},
+            # Strategy 3: name only, recent 3 months (catches any news)
+            {"q": name_query, "timespan": "3m"},
+            # Strategy 4: last name only + financial crime, 6 months
+            {"q": f"{name_parts[-1]} sanctions financial", "timespan": "6m"},
+        ]
+
+        for strategy in strategies:
             try:
                 params = {
-                    "query": q,
+                    "query": strategy["q"],
                     "mode": "ArtList",
                     "maxrecords": "10",
                     "format": "json",
-                    "timespan": timespans[i],
+                    "timespan": strategy["timespan"],
                     "sort": "DateDesc",
+                    "sourcelang": "english",
                 }
-                resp = requests.get(GDELT_URL, params=params, timeout=12)
+                resp = requests.get(GDELT_URL, params=params, timeout=15)
                 if resp.status_code != 200:
+                    print(f"GDELT returned {resp.status_code}")
                     continue
-                articles = resp.json().get("articles", [])
+
+                data = resp.json()
+                articles = data.get("articles", [])
                 if not articles:
+                    print(f"GDELT strategy '{strategy['q']}' returned 0 articles")
                     continue
 
                 seen, results = set(), []
                 for a in articles:
                     domain = a.get("domain", "")
-                    if domain in seen: continue
+                    title = a.get("title", "").strip()
+                    if not title or domain in seen: continue
                     seen.add(domain)
                     tone = float(a.get("tone", 0))
                     results.append({
-                        "title": a.get("title", "").strip(),
+                        "title": title,
                         "url": a.get("url", ""),
                         "source": domain,
                         "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
@@ -273,8 +288,11 @@ class AdverseMediaEngine:
                         "tone_label": "Negative" if tone < -2 else "Neutral" if tone < 2 else "Positive",
                     })
                 if results:
+                    print(f"GDELT found {len(results)} articles using: {strategy['q']}")
                     return results[:8]
             except Exception as e:
-                print(f"Adverse media strategy {i+1} failed: {e}")
+                print(f"GDELT strategy failed: {e}")
                 continue
+
+        print("All GDELT strategies exhausted — no adverse media found")
         return []
