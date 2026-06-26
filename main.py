@@ -20,6 +20,13 @@ adverse_engine = AdverseMediaEngine()
 
 @app.on_event("startup")
 async def startup():
+    import glob
+    # Clear old caches on startup to force fresh download
+    for f in glob.glob("/tmp/*.json"):
+        try:
+            os.remove(f)
+            print(f"Cleared cache: {f}")
+        except: pass
     print("Loading screening data...")
     pep_engine.load()
     sanctions_engine.load()
@@ -33,7 +40,7 @@ async def auto_refresh():
         try:
             from screening import cache_is_fresh
             sanctions_cache = "/tmp/sanctions_v3.json"
-            pep_cache = "/tmp/peps_v4.json"
+            pep_cache = "/tmp/peps_v5.json"
             if not cache_is_fresh(sanctions_cache):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
