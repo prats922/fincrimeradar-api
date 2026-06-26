@@ -232,67 +232,100 @@ class PEPEngine:
 
 
 class AdverseMediaEngine:
+    """
+    Adverse media engine using RSS feeds from major news sources.
+    No API key needed, no rate limits, always available.
+    Sources: BBC, Reuters, Guardian, Al Jazeera, DW, AP News
+    """
+
+    RSS_SOURCES = [
+        ("BBC World", "http://feeds.bbci.co.uk/news/world/rss.xml"),
+        ("BBC Business", "http://feeds.bbci.co.uk/news/business/rss.xml"),
+        ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+        ("DW News", "https://rss.dw.com/rdf/rss-en-all"),
+        ("AP News", "https://apnews.com/rss"),
+        ("France 24", "https://www.france24.com/en/rss"),
+        ("OCCRP", "https://www.occrp.org/en/rss"),
+    ]
+
+    def _parse_rss(self, url: str, timeout: int = 8) -> list:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; FinCrimeRadar/1.0)"}
+            resp = requests.get(url, timeout=timeout, headers=headers)
+            if resp.status_code != 200:
+                return []
+
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(resp.content)
+
+            items = []
+            ns = {"media": "http://search.yahoo.com/mrss/"}
+
+            for item in root.iter("item"):
+                title = item.findtext("title", "").strip()
+                link = item.findtext("link", "").strip()
+                pub_date = item.findtext("pubDate", "")[:16] if item.findtext("pubDate") else ""
+                description = item.findtext("description", "").strip()
+                items.append({
+                    "title": title,
+                    "url": link,
+                    "description": description,
+                    "date": pub_date,
+                })
+            return items
+        except Exception as e:
+            return []
+
+    def _score_relevance(self, text: str, query_terms: list) -> int:
+        text_lower = text.lower()
+        score = 0
+        for term in query_terms:
+            if term.lower() in text_lower:
+                score += 2
+        # Bonus for financial crime keywords
+        fincrime_terms = ["sanction", "fraud", "corrupt", "launder", "bribe", "crime",
+                         "arrested", "charged", "convicted", "investigation", "penalty",
+                         "fine", "regulatory", "banned", "blacklist", "illicit"]
+        for term in fincrime_terms:
+            if term in text_lower:
+                score += 1
+        return score
+
     def search(self, query: str) -> list:
-        # GDELT works best with simple unquoted keyword queries
-        # Build name tokens for flexible matching
-        name_parts = query.strip().split()
-        name_query = " ".join(name_parts[:3])  # max 3 name tokens
+        query_terms = [t for t in query.strip().split() if len(t) > 2]
+        all_results = []
 
-        strategies = [
-            # Strategy 1: name + sanctions keyword, 12 months
-            {"q": f"{name_query} sanctions", "timespan": "12m"},
-            # Strategy 2: name + fraud/crime, 12 months
-            {"q": f"{name_query} fraud corruption", "timespan": "12m"},
-            # Strategy 3: name only, recent 3 months (catches any news)
-            {"q": name_query, "timespan": "3m"},
-            # Strategy 4: last name only + financial crime, 6 months
-            {"q": f"{name_parts[-1]} sanctions financial", "timespan": "6m"},
-        ]
-
-        for strategy in strategies:
+        for source_name, rss_url in self.RSS_SOURCES:
             try:
-                params = {
-                    "query": strategy["q"],
-                    "mode": "ArtList",
-                    "maxrecords": "10",
-                    "format": "json",
-                    "timespan": strategy["timespan"],
-                    "sort": "DateDesc",
-                    "sourcelang": "english",
-                }
-                resp = requests.get(GDELT_URL, params=params, timeout=15)
-                if resp.status_code != 200:
-                    print(f"GDELT returned {resp.status_code}")
-                    continue
-
-                data = resp.json()
-                articles = data.get("articles", [])
-                if not articles:
-                    print(f"GDELT strategy '{strategy['q']}' returned 0 articles")
-                    continue
-
-                seen, results = set(), []
-                for a in articles:
-                    domain = a.get("domain", "")
-                    title = a.get("title", "").strip()
-                    if not title or domain in seen: continue
-                    seen.add(domain)
-                    tone = float(a.get("tone", 0))
-                    results.append({
-                        "title": title,
-                        "url": a.get("url", ""),
-                        "source": domain,
-                        "date": a.get("seendate", "")[:10] if a.get("seendate") else "",
-                        "language": a.get("language", "English"),
-                        "tone": round(tone, 2),
-                        "tone_label": "Negative" if tone < -2 else "Neutral" if tone < 2 else "Positive",
-                    })
-                if results:
-                    print(f"GDELT found {len(results)} articles using: {strategy['q']}")
-                    return results[:8]
+                items = self._parse_rss(rss_url)
+                for item in items:
+                    combined = f"{item['title']} {item['description']}"
+                    score = self._score_relevance(combined, query_terms)
+                    if score >= 2:  # at least name match + one fincrime term
+                        all_results.append({
+                            "title": item["title"],
+                            "url": item["url"],
+                            "source": source_name,
+                            "date": item["date"][:10] if item["date"] else "",
+                            "language": "English",
+                            "tone": -3.0,  # negative by default for fincrime hits
+                            "tone_label": "Negative",
+                            "relevance_score": score,
+                        })
             except Exception as e:
-                print(f"GDELT strategy failed: {e}")
+                print(f"RSS {source_name} failed: {e}")
                 continue
 
-        print("All GDELT strategies exhausted — no adverse media found")
-        return []
+        # Sort by relevance score then deduplicate by source
+        all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
+        seen_sources = set()
+        final = []
+        for r in all_results:
+            if r["source"] not in seen_sources:
+                seen_sources.add(r["source"])
+                final.append(r)
+            if len(final) >= 8:
+                break
+
+        print(f"Adverse media RSS: found {len(final)} relevant articles for '{query}'")
+        return final
