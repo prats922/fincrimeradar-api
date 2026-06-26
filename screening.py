@@ -19,8 +19,8 @@ def cache_is_fresh(cache_path: str) -> bool:
         print(f"Cache {cache_path} is {age.seconds//3600}h old — refreshing")
     return fresh
 
-MAX_SANCTIONS = 12000
-MAX_PEPS = 12000
+MAX_SANCTIONS = 50000
+MAX_PEPS = 40000
 
 def clean(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().upper())
@@ -33,7 +33,7 @@ def extract_names(props: dict) -> list:
             names.extend([v for v in val if v and len(v) > 1])
         elif val:
             names.append(val)
-    return list(set(names))[:4]
+    return list(set(n.strip() for n in names if n and len(n.strip()) > 1))[:4]
 
 def dataset_label(ds: str) -> str:
     labels = {
@@ -51,7 +51,7 @@ class SanctionsEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/sanctions_lite.json"
+        cache = "/tmp/sanctions_v2.json"
         if cache_is_fresh(cache):
             print("Loading sanctions from fresh cache...")
             with open(cache) as f:
@@ -66,22 +66,32 @@ class SanctionsEngine:
                     if len(records) >= MAX_SANCTIONS: break
                     try:
                         entity = json.loads(line)
+                        schema = entity.get("schema", "")
+
+                        # Skip non-relevant entity types to save memory
+                        # Focus on Person, Organization, Company, LegalEntity
+                        if schema in ("Vessel", "Aircraft", "Airplane", "Vehicle",
+                                     "Asset", "Crypto", "Address", "Thing"):
+                            continue
+
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
+
+                        # Only store essential fields — minimal memory footprint
                         records.append({
                             "id": entity.get("id", "")[:20],
-                            "schema": entity.get("schema", "")[:20],
+                            "schema": schema[:20],
                             "names": names,
                             "primary_name": names[0],
                             "datasets": entity.get("datasets", [])[:4],
                             "nationality": props.get("nationality", [])[:3],
                             "country": props.get("country", [])[:3],
-                            "birthDate": props.get("birthDate", [])[:2],
-                            "position": props.get("position", [])[:2],
-                            "program": props.get("program", [])[:3],
+                            "birthDate": props.get("birthDate", [])[:1],
+                            "position": props.get("position", [])[:1],
+                            "program": props.get("program", [])[:2],
                             "reason": props.get("reason", [])[:1],
-                            "topics": entity.get("topics", [])[:3],
+                            "topics": entity.get("topics", [])[:2],
                         })
                     except: continue
                 self.records = records
@@ -151,7 +161,7 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_lite.json"
+        cache = "/tmp/peps_v2.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
@@ -166,20 +176,33 @@ class PEPEngine:
                     if len(records) >= MAX_PEPS: break
                     try:
                         entity = json.loads(line)
-                        if entity.get("schema") not in ("Person", "Organization"): continue
+                        schema = entity.get("schema", "")
+
+                        # Only load Person and Organization PEPs
+                        if schema not in ("Person", "Organization", "Company",
+                                         "PublicBody", "LegalEntity"):
+                            continue
+
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
+
+                        # Skip if no meaningful PEP topic
+                        topics = entity.get("topics", [])
+                        if not any("pep" in t or "role" in t or "sanction" in t
+                                  for t in topics):
+                            continue
+
                         records.append({
                             "id": entity.get("id", "")[:20],
-                            "schema": entity.get("schema", ""),
+                            "schema": schema,
                             "names": names,
                             "primary_name": names[0],
                             "position": props.get("position", [])[:2],
-                            "nationality": props.get("nationality", [])[:3],
-                            "country": props.get("country", [])[:3],
-                            "birthDate": props.get("birthDate", [])[:2],
-                            "topics": entity.get("topics", [])[:3],
+                            "nationality": props.get("nationality", [])[:2],
+                            "country": props.get("country", [])[:2],
+                            "birthDate": props.get("birthDate", [])[:1],
+                            "topics": topics[:3],
                         })
                     except: continue
                 self.records = records
