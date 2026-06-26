@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 
 OPENSANCTIONS_URL = "https://data.opensanctions.org/datasets/latest/sanctions/entities.ftm.json"
-PEP_URL = "https://data.opensanctions.org/datasets/latest/peps/entities.ftm.json"
+PEP_URL = "https://data.opensanctions.org/datasets/latest/every_politician/entities.ftm.json"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 CACHE_TTL_HOURS = 24  # refresh data every 24 hours
@@ -168,7 +168,7 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v3.json"
+        cache = "/tmp/peps_v4.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
@@ -194,12 +194,7 @@ class PEPEngine:
                         names = extract_names(props)
                         if not names: continue
 
-                        # Skip if no meaningful PEP topic
                         topics = entity.get("topics", [])
-                        if not any("pep" in t or "role" in t or "sanction" in t
-                                  for t in topics):
-                            continue
-
                         records.append({
                             "id": entity.get("id", "")[:20],
                             "schema": schema,
