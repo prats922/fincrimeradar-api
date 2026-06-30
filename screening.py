@@ -105,25 +105,30 @@ def smart_match_score(query: str, candidate: str) -> float:
         # A distinctive overlapping word (long enough to be a rare proper
         # noun rather than a common short word) is strong identity evidence
         # on its own, regardless of how much other generic padding surrounds
-        # it on either side (e.g. legal/business suffixes, official titles).
+        # it on either side (e.g. legal/business suffixes, official titles)
+        # and regardless of the overlap RATIO - a real entity's official
+        # designation text can have decent ratio but still score low on
+        # raw string similarity due to reordering/padding (e.g. "Private
+        # Military Company (PMC) Wagner" vs "Wagner Group PMC": ratio 0.5,
+        # but WRatio/token_set blend alone only reaches ~73).
         has_distinctive_overlap = any(len(w) >= 6 for w in meaningful_overlap)
         if not meaningful_overlap:
             # Shared structure only (e.g. both have "institute", "bank") with
             # zero genuine name overlap. Classic false-positive shape.
             combined_base *= 0.55
-        elif overlap_ratio < 0.4 and not has_distinctive_overlap:
+        elif has_distinctive_overlap:
+            # A distinctive word overlaps - treat this as strong identity
+            # evidence and pull the score up to a confident-match floor,
+            # since official designation text often wraps a distinctive
+            # name in lengthy generic legal phrasing AND punctuation
+            # (quotes, apostrophes, parentheses) that drags down raw string
+            # similarity scorers without changing the actual identity match.
+            combined_base = max(combined_base, 88.0)
+        elif overlap_ratio < 0.4:
             # Some meaningful overlap exists but it's a small fraction of
             # either name's distinguishing content, AND the overlapping
             # word(s) are short/common enough to be coincidental.
             combined_base *= 0.65
-        elif overlap_ratio < 0.4 and has_distinctive_overlap:
-            # Low ratio, but the overlap is a genuinely distinctive word -
-            # treat this as a strong match on the strength of that word
-            # alone, since official designation text often wraps a
-            # distinctive name in lengthy generic legal phrasing AND
-            # punctuation (quotes, apostrophes) that drags down raw string
-            # similarity scorers without changing the actual identity match.
-            combined_base = max(combined_base, 88.0)
     elif not q_meaningful or not c_meaningful:
         # One side is entirely generic/structural words. A query like "the
         # institute" or "state bank" alone should never score high purely
@@ -251,15 +256,21 @@ class SanctionsEngine:
         # overlap. This avoids the false positives that raw WRatio produces
         # on short/generic institutional names while still catching real
         # typos, abbreviations and transliteration variants.
-        # limit=150 (not 40): the name_index has ~2.5 aliases per entity, so
-        # at 181k+ index entries a low limit risks the real target being
-        # silently pushed out of the candidate pool by generic-word
-        # collisions on raw WRatio, before smart_match_score ever sees it.
-        # Confirmed in production: Wagner Group PMC returned 0 sanctions hits
-        # at limit=40 despite scoring 100 in isolated testing, because too
-        # many other entries shared the word "Group" and filled the cap.
-        candidate_cutoff = max(50, threshold - 25)
-        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=150, score_cutoff=candidate_cutoff)
+        # limit=2000, cutoff=60 (not the original limit=40/cutoff=55):
+        # confirmed in production that real, well-known sanctioned entities
+        # (e.g. "PRIVATE MILITARY COMPANY (PMC) WAGNER") can be pushed out
+        # of even a 150-item candidate window entirely. Root cause: the
+        # name_index contains ~181k alias entries pulled from 40+ national
+        # sanctions lists with wildly inconsistent formatting, including many
+        # short/fragment-style names ("GROUP", "PMC", "THE GROUP") that score
+        # at or near WRatio's maximum against any query containing those
+        # words, systematically outranking longer, complete real entity names
+        # in the raw ranking. A multi-word query like "Wagner Group PMC" can
+        # be crowded out entirely before smart_match_score ever evaluates it.
+        # Raising the limit to 2000 with a slightly tighter cutoff (60 vs 55)
+        # balances correctness against the larger candidate pool's cost.
+        candidate_cutoff = max(60, threshold - 15)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=2000, score_cutoff=candidate_cutoff)
         rescored = []
         debug_this_query = "WAGNER" in q
         for matched_text, raw_score, idx in raw_matches:
@@ -605,8 +616,8 @@ class PEPEngine:
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
         if not self.name_index: return []
-        candidate_cutoff = max(50, threshold - 25)
-        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=150, score_cutoff=candidate_cutoff)
+        candidate_cutoff = max(60, threshold - 15)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=2000, score_cutoff=candidate_cutoff)
         rescored = []
         for matched_text, _, idx in raw_matches:
             final_score = smart_match_score(q, matched_text)
