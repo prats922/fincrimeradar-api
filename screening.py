@@ -75,6 +75,16 @@ def smart_match_score(query: str, candidate: str) -> float:
     genuine non-generic word overlap (or strong full-string similarity) to
     award a high score, while still catching real typos, abbreviations,
     and transliteration variants of sanctioned/PEP names.
+
+    Distinctive-word exception: a low overlap RATIO can still represent a
+    correct match if the single overlapping word is a rare, distinctive
+    proper noun (e.g. "WAGNER" in "Private Military Company 'Wagner'").
+    Penalising that down to near-zero produced a false negative on a
+    real, well-documented sanctioned entity in production testing. Word
+    length is used as a practical proxy for distinctiveness in the
+    absence of real corpus frequency data: short common words (3-4
+    letters) are unreliable anchors on their own, but longer words are
+    very unlikely to coincide between unrelated entities by chance.
     """
     q = query.lower().strip()
     c = candidate.lower().strip()
@@ -92,14 +102,28 @@ def smart_match_score(query: str, candidate: str) -> float:
     if q_meaningful and c_meaningful:
         meaningful_overlap = q_meaningful & c_meaningful
         overlap_ratio = len(meaningful_overlap) / max(len(q_meaningful), len(c_meaningful))
+        # A distinctive overlapping word (long enough to be a rare proper
+        # noun rather than a common short word) is strong identity evidence
+        # on its own, regardless of how much other generic padding surrounds
+        # it on either side (e.g. legal/business suffixes, official titles).
+        has_distinctive_overlap = any(len(w) >= 6 for w in meaningful_overlap)
         if not meaningful_overlap:
             # Shared structure only (e.g. both have "institute", "bank") with
             # zero genuine name overlap. Classic false-positive shape.
             combined_base *= 0.55
-        elif overlap_ratio < 0.4:
+        elif overlap_ratio < 0.4 and not has_distinctive_overlap:
             # Some meaningful overlap exists but it's a small fraction of
-            # either name's distinguishing content - still a weak match.
+            # either name's distinguishing content, AND the overlapping
+            # word(s) are short/common enough to be coincidental.
             combined_base *= 0.65
+        elif overlap_ratio < 0.4 and has_distinctive_overlap:
+            # Low ratio, but the overlap is a genuinely distinctive word -
+            # treat this as a strong match on the strength of that word
+            # alone, since official designation text often wraps a
+            # distinctive name in lengthy generic legal phrasing AND
+            # punctuation (quotes, apostrophes) that drags down raw string
+            # similarity scorers without changing the actual identity match.
+            combined_base = max(combined_base, 88.0)
     elif not q_meaningful or not c_meaningful:
         # One side is entirely generic/structural words. A query like "the
         # institute" or "state bank" alone should never score high purely
@@ -237,10 +261,16 @@ class SanctionsEngine:
         candidate_cutoff = max(50, threshold - 25)
         raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=150, score_cutoff=candidate_cutoff)
         rescored = []
-        for matched_text, _, idx in raw_matches:
+        debug_this_query = "WAGNER" in q
+        for matched_text, raw_score, idx in raw_matches:
             final_score = smart_match_score(q, matched_text)
+            if debug_this_query and "WAGNER" in matched_text.upper():
+                print(f"DEBUG WAGNER candidate: text='{matched_text}' "
+                      f"raw_wratio={raw_score:.1f} smart_score={final_score:.1f}")
             if final_score >= threshold:
                 rescored.append((matched_text, final_score, idx))
+        if debug_this_query and not any("WAGNER" in m[0].upper() for m in raw_matches):
+            print(f"DEBUG: no WAGNER candidate found at all in {len(raw_matches)} raw matches for '{q}'")
         rescored.sort(key=lambda x: x[1], reverse=True)
         matches = rescored[:15]
         print(f"Sanctions search '{q}': {len(raw_matches)} raw candidates, {len(rescored)} passed re-scoring, {len(matches)} returned")
