@@ -3,6 +3,12 @@ from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 
 OPENSANCTIONS_URL = "https://data.opensanctions.org/datasets/latest/sanctions/entities.ftm.json"
+# Dedicated PEPs collection (separate from sanctions) - the previous code
+# incorrectly cross-referenced PEP topics out of the sanctions-only stream,
+# which only surfaced entities that were BOTH sanctioned AND PEP-tagged,
+# explaining why only ~114 records ever loaded despite OpenSanctions having
+# 750,000+ PEP targets. This is the correct dedicated dataset endpoint.
+OPENSANCTIONS_PEPS_URL = "https://data.opensanctions.org/datasets/latest/peps/entities.ftm.json"
 # PEP data extracted from sanctions dataset + built-in database
 PEP_WIKIDATA_URL = "https://query.wikidata.org/sparql"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -20,8 +26,20 @@ def cache_is_fresh(cache_path: str) -> bool:
         print(f"Cache {cache_path} is {age.seconds//3600}h old — refreshing")
     return fresh
 
-MAX_SANCTIONS = 25000
-MAX_PEPS = 15000
+# OpenSanctions' consolidated sanctions collection contains ~70,000 actual
+# screening targets (people, organizations, companies) once non-target
+# schema types (vessels, addresses, securities, etc.) are filtered out.
+# The previous cap of 25,000 silently truncated the dataset roughly 65% of
+# the way through, meaning well-known sanctioned entities could be missing
+# entirely depending on stream order, a genuine false-negative risk. This
+# cap is set with headroom above the full target count.
+MAX_SANCTIONS = 80000
+# OpenSanctions' dedicated PEP collection has 750k+ targets across 134
+# national sources (897MB raw), too large to hold in memory on a free-tier
+# host alongside the sanctions index. This cap keeps a meaningfully large,
+# but necessarily partial, PEP set. See PEPEngine.load() for source
+# prioritisation logic and the partial-coverage warning surfaced to users.
+MAX_PEPS = 60000
 
 def clean(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().upper())
@@ -122,7 +140,7 @@ class SanctionsEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/sanctions_v3.json"
+        cache = "/tmp/sanctions_v4.json"
         if cache_is_fresh(cache):
             print("Loading sanctions from fresh cache...")
             with open(cache) as f:
@@ -252,41 +270,51 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v5.json"
+        cache = "/tmp/peps_v6.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
                 self.records = json.load(f)
         else:
-            print("Building PEP database from built-in + sanctions cross-reference...")
+            print("Building PEP database from dedicated OpenSanctions PEPs dataset...")
             try:
-                # Strategy: download sanctions dataset and extract PEP-tagged entities
-                # This works because sanctions URL is accessible from Render
-                sanctions_url = OPENSANCTIONS_URL
-                resp = requests.get(sanctions_url, stream=True, timeout=120)
-                records = []
+                # Use the correct dedicated PEPs collection, NOT the sanctions
+                # dataset. The PEPs collection is ~750k targets / 897MB raw,
+                # too large to fully hold in memory on a free-tier host, so we
+                # apply a cap with priority ordering: highest-impact roles
+                # (heads of state, senior government, legislators, judiciary,
+                # diplomats) are kept preferentially over lower-priority
+                # categories (e.g. local/municipal officials) if the cap is
+                # reached before the stream ends.
+                resp = requests.get(OPENSANCTIONS_PEPS_URL, stream=True, timeout=180)
                 pep_schemas = {"Person", "Organization", "Company", "PublicBody", "LegalEntity"}
-                pep_topics = {"role.pep", "role.rca", "role.pol", "role.gov",
-                             "role.leg", "role.diplo", "role.judge", "role.mil",
-                             "role.soe", "role.head", "role.mep"}
+
+                # Priority tiers - higher priority topics fill the cap first.
+                high_priority_topics = {"role.head", "role.pep", "role.gov", "role.pol"}
+                medium_priority_topics = {"role.leg", "role.diplo", "role.judge", "role.mil", "role.soe", "role.mep"}
+                all_pep_topics = high_priority_topics | medium_priority_topics | {"role.rca"}
+
+                high_records, medium_records, low_records = [], [], []
 
                 for line in resp.iter_lines():
                     if not line: continue
-                    if len(records) >= MAX_PEPS: break
+                    # Stop once we've comfortably exceeded the cap across all
+                    # tiers combined, to bound total download/parse time.
+                    if len(high_records) + len(medium_records) + len(low_records) >= MAX_PEPS * 2:
+                        break
                     try:
                         entity = json.loads(line)
                         schema = entity.get("schema", "")
                         if schema not in pep_schemas: continue
 
                         topics = set(entity.get("topics", []))
-                        # Only include if has a PEP/role topic
-                        if not topics.intersection(pep_topics): continue
+                        if not topics.intersection(all_pep_topics): continue
 
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
 
-                        records.append({
+                        record = {
                             "id": "pep_" + entity.get("id", "")[:16],
                             "schema": schema,
                             "names": names,
@@ -296,8 +324,24 @@ class PEPEngine:
                             "country": props.get("country", [])[:2],
                             "birthDate": props.get("birthDate", [])[:1],
                             "topics": list(topics)[:3],
-                        })
+                        }
+
+                        if topics.intersection(high_priority_topics):
+                            high_records.append(record)
+                        elif topics.intersection(medium_priority_topics):
+                            medium_records.append(record)
+                        else:
+                            low_records.append(record)
                     except: continue
+
+                # Fill the cap starting with highest priority tier first.
+                records = high_records[:MAX_PEPS]
+                remaining = MAX_PEPS - len(records)
+                if remaining > 0:
+                    records.extend(medium_records[:remaining])
+                    remaining = MAX_PEPS - len(records)
+                if remaining > 0:
+                    records.extend(low_records[:remaining])
 
                 # Add built-in PEP database as supplement
                 records.extend(self._builtin_peps())
@@ -313,7 +357,9 @@ class PEPEngine:
 
                 with open(cache, "w") as f:
                     json.dump(self.records, f)
-                print(f"Loaded {len(self.records)} PEP records (from sanctions cross-ref + built-in)")
+                print(f"Loaded {len(self.records)} PEP records "
+                      f"(high-priority: {len(high_records[:MAX_PEPS])}, "
+                      f"from dedicated PEPs dataset + built-in)")
             except Exception as e:
                 print(f"PEP load failed: {e}")
                 import traceback

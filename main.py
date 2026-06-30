@@ -39,8 +39,8 @@ async def auto_refresh():
         await asyncio.sleep(3600)  # check every hour
         try:
             from screening import cache_is_fresh
-            sanctions_cache = "/tmp/sanctions_v3.json"
-            pep_cache = "/tmp/peps_v5.json"
+            sanctions_cache = "/tmp/sanctions_v4.json"
+            pep_cache = "/tmp/peps_v6.json"
             if not cache_is_fresh(sanctions_cache):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
@@ -132,15 +132,22 @@ def status():
         "status": "live",
         "data": {
             "sanctions_records": sanctions_engine.count(),
-            "sanctions_cache_age": cache_age("/tmp/sanctions_lite.json"),
+            "sanctions_cache_age": cache_age("/tmp/sanctions_v4.json"),
+            "sanctions_coverage": "Full consolidated sanctions target list (~70k entities)",
             "pep_records": pep_engine.count(),
-            "pep_cache_age": cache_age("/tmp/peps_lite.json"),
+            "pep_cache_age": cache_age("/tmp/peps_v6.json"),
+            "pep_coverage": "Partial: prioritised subset of heads of state, "
+                             "senior government, and legislative roles. The full "
+                             "OpenSanctions PEP dataset exceeds 750,000 entities "
+                             "and is too large to host in full on this free tier. "
+                             "Lower-profile regional/municipal PEPs may not be "
+                             "covered. Always verify against official sources.",
             "cache_ttl_hours": 24,
             "adverse_media": "live RSS (no cache)",
         },
         "sources": [
             "OpenSanctions (OFAC, UN, EU, OFSI, 40+ lists)",
-            "OpenSanctions PEP dataset",
+            "OpenSanctions PEP dataset (partial coverage, see pep_coverage)",
             "BBC, OCCRP, AP, DW, Al Jazeera (RSS)",
         ]
     }
