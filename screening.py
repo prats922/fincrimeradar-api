@@ -293,10 +293,19 @@ class PEPEngine:
                 resp.raise_for_status()
                 pep_schemas = {"Person", "Organization", "Company", "PublicBody", "LegalEntity"}
 
-                # Priority tiers - higher priority topics fill the cap first.
-                high_priority_topics = {"role.head", "role.pep", "role.gov", "role.pol"}
-                medium_priority_topics = {"role.leg", "role.diplo", "role.judge", "role.mil", "role.soe", "role.mep"}
-                all_pep_topics = high_priority_topics | medium_priority_topics | {"role.rca"}
+                # Corrected against OpenSanctions' actual topic taxonomy
+                # (docs/topics): the previous version used invented topic
+                # strings like "role.gov", "role.leg", "role.judge" that do
+                # not exist in the real data, which is why zero records
+                # matched despite 1.9M lines parsing successfully. The only
+                # genuine person-level role topics are role.pep and role.rca;
+                # finer classification (gov.head, gov.legislative, etc.)
+                # lives on linked Position entities, not the Person record
+                # itself, per OpenSanctions' documented data model.
+                high_priority_topics = {"role.pep"}
+                medium_priority_topics = {"role.rca"}
+                all_pep_topics = high_priority_topics | medium_priority_topics
+                sample_topics_logged = 0
 
                 high_records, medium_records, low_records = [], [], []
                 lines_seen = 0
@@ -318,6 +327,16 @@ class PEPEngine:
                         if schema not in pep_schemas: continue
 
                         topics = set(entity.get("topics", []))
+
+                        # One-time diagnostic: log the actual topic values
+                        # seen on real Person entities, so if matching still
+                        # fails we have ground truth instead of guesswork.
+                        if schema == "Person" and sample_topics_logged < 5:
+                            print(f"DEBUG Person sample: id={entity.get('id','')[:20]} "
+                                  f"topics={list(topics)} "
+                                  f"name={entity.get('properties',{}).get('name',['?'])[:1]}")
+                            sample_topics_logged += 1
+
                         if not topics.intersection(all_pep_topics): continue
 
                         props = entity.get("properties", {})
