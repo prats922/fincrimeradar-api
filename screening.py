@@ -227,8 +227,15 @@ class SanctionsEngine:
         # overlap. This avoids the false positives that raw WRatio produces
         # on short/generic institutional names while still catching real
         # typos, abbreviations and transliteration variants.
+        # limit=150 (not 40): the name_index has ~2.5 aliases per entity, so
+        # at 181k+ index entries a low limit risks the real target being
+        # silently pushed out of the candidate pool by generic-word
+        # collisions on raw WRatio, before smart_match_score ever sees it.
+        # Confirmed in production: Wagner Group PMC returned 0 sanctions hits
+        # at limit=40 despite scoring 100 in isolated testing, because too
+        # many other entries shared the word "Group" and filled the cap.
         candidate_cutoff = max(50, threshold - 25)
-        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=40, score_cutoff=candidate_cutoff)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=150, score_cutoff=candidate_cutoff)
         rescored = []
         for matched_text, _, idx in raw_matches:
             final_score = smart_match_score(q, matched_text)
@@ -236,6 +243,7 @@ class SanctionsEngine:
                 rescored.append((matched_text, final_score, idx))
         rescored.sort(key=lambda x: x[1], reverse=True)
         matches = rescored[:15]
+        print(f"Sanctions search '{q}': {len(raw_matches)} raw candidates, {len(rescored)} passed re-scoring, {len(matches)} returned")
         seen, results = set(), []
         for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
@@ -568,7 +576,7 @@ class PEPEngine:
         q = clean(query)
         if not self.name_index: return []
         candidate_cutoff = max(50, threshold - 25)
-        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=40, score_cutoff=candidate_cutoff)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=150, score_cutoff=candidate_cutoff)
         rescored = []
         for matched_text, _, idx in raw_matches:
             final_score = smart_match_score(q, matched_text)
@@ -576,6 +584,7 @@ class PEPEngine:
                 rescored.append((matched_text, final_score, idx))
         rescored.sort(key=lambda x: x[1], reverse=True)
         matches = rescored[:15]
+        print(f"PEP search '{q}': {len(raw_matches)} raw candidates, {len(rescored)} passed re-scoring, {len(matches)} returned")
         seen, results = set(), []
         for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
