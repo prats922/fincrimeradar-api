@@ -40,7 +40,7 @@ async def auto_refresh():
         try:
             from screening import cache_is_fresh
             sanctions_cache = "/tmp/sanctions_v4.json"
-            pep_cache = "/tmp/peps_v6.json"
+            pep_cache = "/tmp/peps_v7.json"
             if not cache_is_fresh(sanctions_cache):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
@@ -135,7 +135,7 @@ def status():
             "sanctions_cache_age": cache_age("/tmp/sanctions_v4.json"),
             "sanctions_coverage": "Full consolidated sanctions target list (~70k entities)",
             "pep_records": pep_engine.count(),
-            "pep_cache_age": cache_age("/tmp/peps_v6.json"),
+            "pep_cache_age": cache_age("/tmp/peps_v7.json"),
             "pep_coverage": "Partial: prioritised subset of heads of state, "
                              "senior government, and legislative roles. The full "
                              "OpenSanctions PEP dataset exceeds 750,000 entities "

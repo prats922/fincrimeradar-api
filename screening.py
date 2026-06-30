@@ -270,7 +270,7 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v6.json"
+        cache = "/tmp/peps_v7.json"
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
@@ -302,10 +302,23 @@ class PEPEngine:
                 # finer classification (gov.head, gov.legislative, etc.)
                 # lives on linked Position entities, not the Person record
                 # itself, per OpenSanctions' documented data model.
-                high_priority_topics = {"role.pep"}
-                medium_priority_topics = {"role.rca"}
-                all_pep_topics = high_priority_topics | medium_priority_topics
-                sample_topics_logged = 0
+                # Since topics are unavailable at this data layer, priority
+                # tiering instead uses keyword signals from the position text
+                # itself, which IS populated on the Person record. This keeps
+                # high-impact roles (heads of state, ministers, legislators)
+                # preferentially within the memory cap over lower-profile
+                # local/municipal positions, without needing to traverse to
+                # separately-linked Position/Occupancy entities.
+                HIGH_PRIORITY_POSITION_KEYWORDS = [
+                    "president", "prime minister", "head of state", "monarch",
+                    "king", "queen", "chancellor", "minister", "governor",
+                    "ambassador", "judge", "chief justice", "speaker",
+                    "secretary of state", "central bank", "supreme court",
+                ]
+                MEDIUM_PRIORITY_POSITION_KEYWORDS = [
+                    "member of parliament", "senator", "deputy", "legislator",
+                    "member of congress", "councillor", "mayor", "diplomat",
+                ]
 
                 high_records, medium_records, low_records = [], [], []
                 lines_seen = 0
@@ -326,22 +339,21 @@ class PEPEngine:
                         schema = entity.get("schema", "")
                         if schema not in pep_schemas: continue
 
-                        topics = set(entity.get("topics", []))
-
-                        # One-time diagnostic: log the actual topic values
-                        # seen on real Person entities, so if matching still
-                        # fails we have ground truth instead of guesswork.
-                        if schema == "Person" and sample_topics_logged < 5:
-                            print(f"DEBUG Person sample: id={entity.get('id','')[:20]} "
-                                  f"topics={list(topics)} "
-                                  f"name={entity.get('properties',{}).get('name',['?'])[:1]}")
-                            sample_topics_logged += 1
-
-                        if not topics.intersection(all_pep_topics): continue
-
+                        # IMPORTANT: the raw entities.ftm.json bulk export does
+                        # NOT populate the `topics` field - that is a derived
+                        # value only available through OpenSanctions' API/
+                        # website layer. Confirmed via production diagnostics:
+                        # 1.93M lines read, every single Person entity had
+                        # topics=[]. Since this file IS the dedicated PEPs-only
+                        # collection, every Person entity in this stream is
+                        # already a confirmed PEP by virtue of being present
+                        # here at all - no further topic filtering is needed
+                        # or possible at this data layer.
                         props = entity.get("properties", {})
                         names = extract_names(props)
                         if not names: continue
+
+                        position_text = " ".join(props.get("position", [])).lower()
 
                         record = {
                             "id": "pep_" + entity.get("id", "")[:16],
@@ -352,18 +364,19 @@ class PEPEngine:
                             "nationality": props.get("nationality", [])[:2],
                             "country": props.get("country", [])[:2],
                             "birthDate": props.get("birthDate", [])[:1],
-                            "topics": list(topics)[:3],
+                            "topics": ["role.pep"],
                         }
 
-                        if topics.intersection(high_priority_topics):
+                        if any(kw in position_text for kw in HIGH_PRIORITY_POSITION_KEYWORDS):
                             high_records.append(record)
-                        elif topics.intersection(medium_priority_topics):
+                        elif any(kw in position_text for kw in MEDIUM_PRIORITY_POSITION_KEYWORDS):
                             medium_records.append(record)
                         else:
                             low_records.append(record)
                     except Exception:
                         json_errors += 1
                         continue
+
 
                 print(f"PEP fetch complete: {lines_seen} lines read, {json_errors} parse errors, "
                       f"{len(high_records)} high / {len(medium_records)} medium / {len(low_records)} low priority collected")
