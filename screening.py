@@ -566,9 +566,19 @@ class AdverseMediaEngine:
     def _score_relevance(self, text: str, query_terms: list) -> int:
         text_lower = text.lower()
         score = 0
+        meaningful_matches = 0
         for term in query_terms:
             if term.lower() in text_lower:
                 score += 2
+                meaningful_matches += 1
+        # Require at least one genuinely distinguishing (non-generic) query
+        # term to match before this article counts as relevant at all. Without
+        # this, a query like "SDM Institute for Management" matches any
+        # unrelated headline containing the word "institute" or "management",
+        # since those are common institutional terms that say nothing about
+        # the specific entity being screened.
+        if meaningful_matches == 0:
+            return 0
         # Bonus for financial crime keywords
         fincrime_terms = ["sanction", "fraud", "corrupt", "launder", "bribe", "crime",
                          "arrested", "charged", "convicted", "investigation", "penalty",
@@ -579,7 +589,11 @@ class AdverseMediaEngine:
         return score
 
     def search(self, query: str) -> list:
-        query_terms = [t for t in query.strip().split() if len(t) > 2]
+        # Strip generic/structural words before matching, so a query like
+        # "SDM Institute for Management" only triggers a hit on the
+        # distinguishing word "SDM", not on generic institutional terms
+        # like "institute" or "management" that appear in unrelated articles.
+        query_terms = [t for t in query.strip().split() if len(t) > 2 and t.lower() not in GENERIC_TERMS]
         all_results = []
 
         for source_name, rss_url in self.RSS_SOURCES:
