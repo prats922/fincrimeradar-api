@@ -287,6 +287,10 @@ class PEPEngine:
                 # categories (e.g. local/municipal officials) if the cap is
                 # reached before the stream ends.
                 resp = requests.get(OPENSANCTIONS_PEPS_URL, stream=True, timeout=180)
+                print(f"PEP fetch status: {resp.status_code}, "
+                      f"content-type: {resp.headers.get('content-type')}, "
+                      f"content-length: {resp.headers.get('content-length')}")
+                resp.raise_for_status()
                 pep_schemas = {"Person", "Organization", "Company", "PublicBody", "LegalEntity"}
 
                 # Priority tiers - higher priority topics fill the cap first.
@@ -295,9 +299,15 @@ class PEPEngine:
                 all_pep_topics = high_priority_topics | medium_priority_topics | {"role.rca"}
 
                 high_records, medium_records, low_records = [], [], []
+                lines_seen = 0
+                json_errors = 0
 
                 for line in resp.iter_lines():
                     if not line: continue
+                    lines_seen += 1
+                    if lines_seen % 50000 == 0:
+                        print(f"PEP load progress: {lines_seen} lines read, "
+                              f"{len(high_records)}H/{len(medium_records)}M/{len(low_records)}L collected")
                     # Stop once we've comfortably exceeded the cap across all
                     # tiers combined, to bound total download/parse time.
                     if len(high_records) + len(medium_records) + len(low_records) >= MAX_PEPS * 2:
@@ -332,7 +342,12 @@ class PEPEngine:
                             medium_records.append(record)
                         else:
                             low_records.append(record)
-                    except: continue
+                    except Exception:
+                        json_errors += 1
+                        continue
+
+                print(f"PEP fetch complete: {lines_seen} lines read, {json_errors} parse errors, "
+                      f"{len(high_records)} high / {len(medium_records)} medium / {len(low_records)} low priority collected")
 
                 # Fill the cap starting with highest priority tier first.
                 records = high_records[:MAX_PEPS]
