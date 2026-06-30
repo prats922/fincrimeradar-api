@@ -26,6 +26,76 @@ MAX_PEPS = 15000
 def clean(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().upper())
 
+# Generic/structural words that should not, on their own, drive a high match score.
+# Without this, short or generic-sounding entity names (e.g. "SDM Bank", "Management
+# Center") trigger false positive sanctions hits against unrelated organisations
+# whose names happen to share a common business/legal term.
+GENERIC_TERMS = {
+    "the", "of", "for", "and", "an", "a", "in", "on", "at", "to",
+    "bank", "banking", "institute", "institution", "management",
+    "development", "state", "national", "international", "global",
+    "group", "corporation", "corp", "company", "co", "ltd", "limited",
+    "inc", "incorporated", "llc", "llp", "plc", "centre", "center",
+    "foundation", "association", "agency", "authority", "council",
+    "committee", "office", "ministry", "department", "bureau",
+    "organization", "organisation", "society", "trust", "fund",
+    "holdings", "holding", "enterprise", "enterprises", "industries",
+    "industry", "services", "service", "solutions", "systems",
+    "technologies", "technology", "university", "college", "school",
+    "academy", "university", "general", "federal", "central", "union",
+}
+
+def smart_match_score(query: str, candidate: str) -> float:
+    """
+    Token-set based fuzzy match with a generic-term penalty.
+
+    Rationale: rapidfuzz's WRatio alone over-weights partial substring and
+    token overlap, which produces false positives whenever a query shares
+    only common business/institutional words with a candidate name (e.g.
+    an unrelated "Institute for Management" scoring 85+ against "SDM Bank"
+    purely because both contain generic terms). This function requires
+    genuine non-generic word overlap (or strong full-string similarity) to
+    award a high score, while still catching real typos, abbreviations,
+    and transliteration variants of sanctioned/PEP names.
+    """
+    q = query.lower().strip()
+    c = candidate.lower().strip()
+
+    base_score = fuzz.token_set_ratio(q, c)
+    wratio_score = fuzz.WRatio(q, c)
+    combined_base = max(base_score, wratio_score * 0.85)
+
+    q_words = set(re.findall(r"[a-z0-9]+", q))
+    c_words = set(re.findall(r"[a-z0-9]+", c))
+
+    q_meaningful = q_words - GENERIC_TERMS
+    c_meaningful = c_words - GENERIC_TERMS
+
+    if q_meaningful and c_meaningful:
+        meaningful_overlap = q_meaningful & c_meaningful
+        overlap_ratio = len(meaningful_overlap) / max(len(q_meaningful), len(c_meaningful))
+        if not meaningful_overlap:
+            # Shared structure only (e.g. both have "institute", "bank") with
+            # zero genuine name overlap. Classic false-positive shape.
+            combined_base *= 0.55
+        elif overlap_ratio < 0.4:
+            # Some meaningful overlap exists but it's a small fraction of
+            # either name's distinguishing content - still a weak match.
+            combined_base *= 0.65
+    elif not q_meaningful or not c_meaningful:
+        # One side is entirely generic/structural words. A query like "the
+        # institute" or "state bank" alone should never score high purely
+        # against another generically-named entity.
+        combined_base *= 0.6
+
+    # Guard against short queries matching long unrelated names purely on
+    # substring containment.
+    len_ratio = min(len(q_words), len(c_words)) / max(len(q_words), len(c_words))
+    if len_ratio < 0.35:
+        combined_base *= 0.9
+
+    return round(combined_base, 1)
+
 def extract_names(props: dict) -> list:
     names = []
     for field in ["name", "alias"]:
@@ -134,7 +204,20 @@ class SanctionsEngine:
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
         if not self.name_index: return []
-        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=15, score_cutoff=threshold)
+        # Cast a wider net at candidate-generation stage (lower cutoff), then
+        # re-score with smart_match_score, which penalises generic-word-only
+        # overlap. This avoids the false positives that raw WRatio produces
+        # on short/generic institutional names while still catching real
+        # typos, abbreviations and transliteration variants.
+        candidate_cutoff = max(50, threshold - 25)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=40, score_cutoff=candidate_cutoff)
+        rescored = []
+        for matched_text, _, idx in raw_matches:
+            final_score = smart_match_score(q, matched_text)
+            if final_score >= threshold:
+                rescored.append((matched_text, final_score, idx))
+        rescored.sort(key=lambda x: x[1], reverse=True)
+        matches = rescored[:15]
         seen, results = set(), []
         for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
@@ -391,7 +474,15 @@ class PEPEngine:
     def search(self, query: str, threshold: int = 80) -> list:
         q = clean(query)
         if not self.name_index: return []
-        matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=15, score_cutoff=threshold)
+        candidate_cutoff = max(50, threshold - 25)
+        raw_matches = process.extract(q, [n[0] for n in self.name_index], scorer=fuzz.WRatio, limit=40, score_cutoff=candidate_cutoff)
+        rescored = []
+        for matched_text, _, idx in raw_matches:
+            final_score = smart_match_score(q, matched_text)
+            if final_score >= threshold:
+                rescored.append((matched_text, final_score, idx))
+        rescored.sort(key=lambda x: x[1], reverse=True)
+        matches = rescored[:15]
         seen, results = set(), []
         for _, score, idx in matches:
             orig_idx = self.name_index[idx][1]
