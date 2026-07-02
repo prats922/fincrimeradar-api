@@ -111,7 +111,22 @@ def smart_match_score(query: str, candidate: str) -> float:
         # raw string similarity due to reordering/padding (e.g. "Private
         # Military Company (PMC) Wagner" vs "Wagner Group PMC": ratio 0.5,
         # but WRatio/token_set blend alone only reaches ~73).
-        has_distinctive_overlap = any(len(w) >= 6 for w in meaningful_overlap)
+        # A distinctive overlapping word (long enough to be a rare proper
+        # noun rather than a common short word) is strong identity evidence
+        # ONLY if it accounts for the entire meaningful content of at least
+        # one of the two names being compared. That's what distinguishes a
+        # real match like "Wagner" vs "Private Military Company 'Wagner'"
+        # (the query's one meaningful word IS fully covered by the overlap)
+        # from a false positive like "Mukesh Ambani" vs "Mukesh Mansukhlal
+        # Vaya" (the query shares a first name but "ambani" is left
+        # unmatched, so the overlap is only a fragment of the query's real
+        # identity, not the whole of it). Requiring full coverage on at
+        # least one side stops common given names from acting as a free
+        # pass to a high score whenever the rest of the name differs.
+        has_distinctive_overlap = (
+            any(len(w) >= 6 for w in meaningful_overlap)
+            and (q_meaningful <= meaningful_overlap or c_meaningful <= meaningful_overlap)
+        )
         if not meaningful_overlap:
             # Shared structure only (e.g. both have "institute", "bank") with
             # zero genuine name overlap. Classic false-positive shape.
