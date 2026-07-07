@@ -16,7 +16,7 @@ app.add_middleware(
     # origin outright, which left /api/screen scrapable from any website
     # on the internet with zero rate limiting behind it. Only the two
     # origins that genuinely need to call this API stay listed.
-    allow_origins=["https://fincrimeradar.org", "http://localhost:3000"],
+    allow_origins=["https://fincrimeradar.org", "https://www.fincrimeradar.org", "http://localhost:3000"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
