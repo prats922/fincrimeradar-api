@@ -1,4 +1,4 @@
-import json, os, re, requests, gc, time
+import json, os, re, requests, gc, time, tempfile
 from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 
@@ -15,6 +15,20 @@ GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 CACHE_TTL_HOURS = 24  # refresh data every 24 hours
 
+# Cache paths, resolved via tempfile.gettempdir() rather than a hardcoded
+# "/tmp" string. "/tmp" only exists on Linux. On Windows it resolves to
+# nothing, so every cache write here previously raised FileNotFoundError,
+# which is worse than it sounds: the write sat inside the same try block
+# as the network fetch, so the exception handler discarded the already
+# successfully fetched real data and replaced it with the small fallback
+# below, confirmed in production logs showing a full successful 438,645
+# line PEP fetch immediately followed by a 150-entry fallback index.
+# tempfile.gettempdir() resolves correctly on Linux, Windows, and macOS,
+# and main.py imports these same constants rather than hardcoding its own
+# copy, so the two files cannot silently drift out of sync on path again.
+SANCTIONS_CACHE_PATH = os.path.join(tempfile.gettempdir(), "sanctions_v4.json")
+PEP_CACHE_PATH = os.path.join(tempfile.gettempdir(), "peps_v7.json")
+
 def cache_is_fresh(cache_path: str) -> bool:
     """Check if cache file exists and is less than 24 hours old."""
     if not os.path.exists(cache_path):
@@ -25,6 +39,21 @@ def cache_is_fresh(cache_path: str) -> bool:
     if not fresh:
         print(f"Cache {cache_path} is {age.seconds//3600}h old — refreshing")
     return fresh
+
+def _write_cache(cache_path: str, records) -> None:
+    """Write the cache file in its own try/except, deliberately separate
+    from the fetch and parse step above it. A cache write failure, wrong
+    permissions, a missing directory, a full disk, means the next restart
+    re-downloads instead of reading a fast cache, which costs time but is
+    never destructive. Letting a cache write failure destroy already
+    successfully fetched, already parsed, in-memory records is the actual
+    bug this separation exists to prevent."""
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(records, f)
+    except OSError as e:
+        print(f"Cache write failed for {cache_path}, continuing with in-memory "
+              f"data from this fetch, next restart will re-download: {e}")
 
 # OpenSanctions' consolidated sanctions collection contains ~70,000 actual
 # screening targets (people, organizations, companies) once non-target
@@ -184,7 +213,7 @@ class SanctionsEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/sanctions_v4.json"
+        cache = SANCTIONS_CACHE_PATH
         if cache_is_fresh(cache):
             print("Loading sanctions from fresh cache...")
             with open(cache) as f:
@@ -227,10 +256,12 @@ class SanctionsEngine:
                             "topics": entity.get("topics", [])[:2],
                         })
                     except: continue
+                # Records assigned to self.records here, before the cache
+                # write, deliberately outside the write's own try/except.
+                # A cache write failure below must never roll this back.
                 self.records = records
-                with open(cache, "w") as f:
-                    json.dump(records, f)
                 print(f"Loaded {len(records)} sanctions records")
+                _write_cache(cache, records)
             except Exception as e:
                 print(f"Sanctions load failed: {e}")
                 import traceback
@@ -334,7 +365,7 @@ class PEPEngine:
         self.name_index = []
 
     def load(self):
-        cache = "/tmp/peps_v7.json"
+        cache = PEP_CACHE_PATH
         if cache_is_fresh(cache):
             print("Loading PEP data from fresh cache...")
             with open(cache) as f:
@@ -464,13 +495,15 @@ class PEPEngine:
                     if key not in seen_names:
                         seen_names.add(key)
                         deduped.append(r)
+                # Records assigned to self.records here, before the cache
+                # write, deliberately outside the write's own try/except.
+                # A cache write failure below must never roll this back.
                 self.records = deduped
 
-                with open(cache, "w") as f:
-                    json.dump(self.records, f)
                 print(f"Loaded {len(self.records)} PEP records "
                       f"(high-priority: {len(high_records[:MAX_PEPS])}, "
                       f"from dedicated PEPs dataset + built-in)")
+                _write_cache(cache, self.records)
             except Exception as e:
                 print(f"PEP load failed: {e}")
                 import traceback

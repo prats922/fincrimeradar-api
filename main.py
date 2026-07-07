@@ -3,7 +3,7 @@ import asyncio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os, json, re
-from screening import SanctionsEngine, PEPEngine, AdverseMediaEngine
+from screening import SanctionsEngine, PEPEngine, AdverseMediaEngine, cache_is_fresh, SANCTIONS_CACHE_PATH, PEP_CACHE_PATH
 from routes_scenario_lab import router as scenario_lab_router
 
 app = FastAPI(title="FinCrimeRadar API", version="1.0.0")
@@ -27,14 +27,29 @@ adverse_engine = AdverseMediaEngine()
 
 @app.on_event("startup")
 async def startup():
-    import glob
-    # Clear old caches on startup to force fresh download
-    for f in glob.glob("/tmp/*.json"):
-        try:
-            os.remove(f)
-            print(f"Cleared cache: {f}")
-        except: pass
+    # No longer an unconditional wipe. The previous version cleared every
+    # /tmp/*.json file on every restart before calling load(), which forced
+    # a full re-download and re-parse of both datasets on every cold start
+    # regardless of whether the existing cache was still genuinely fresh,
+    # the exact cost a free-tier host spinning down on inactivity pays on
+    # its very next request. load() itself already checks cache_is_fresh
+    # internally and reads straight from cache when possible, so this step
+    # now only removes a cache file when it has actually gone stale, the
+    # same condition the hourly auto_refresh loop below already checks.
     print("Loading screening data...")
+    if not cache_is_fresh(SANCTIONS_CACHE_PATH) and os.path.exists(SANCTIONS_CACHE_PATH):
+        try:
+            os.remove(SANCTIONS_CACHE_PATH)
+            print(f"Cleared stale sanctions cache: {SANCTIONS_CACHE_PATH}")
+        except OSError as e:
+            print(f"Could not remove stale sanctions cache: {e}")
+    if not cache_is_fresh(PEP_CACHE_PATH) and os.path.exists(PEP_CACHE_PATH):
+        try:
+            os.remove(PEP_CACHE_PATH)
+            print(f"Cleared stale PEP cache: {PEP_CACHE_PATH}")
+        except OSError as e:
+            print(f"Could not remove stale PEP cache: {e}")
+
     pep_engine.load()
     sanctions_engine.load()
     print("Screening engines ready.")
@@ -45,14 +60,11 @@ async def auto_refresh():
     while True:
         await asyncio.sleep(3600)  # check every hour
         try:
-            from screening import cache_is_fresh
-            sanctions_cache = "/tmp/sanctions_v4.json"
-            pep_cache = "/tmp/peps_v7.json"
-            if not cache_is_fresh(sanctions_cache):
+            if not cache_is_fresh(SANCTIONS_CACHE_PATH):
                 print("Auto-refresh: sanctions data stale, reloading...")
                 sanctions_engine.load()
                 print("Auto-refresh: sanctions updated")
-            if not cache_is_fresh(pep_cache):
+            if not cache_is_fresh(PEP_CACHE_PATH):
                 print("Auto-refresh: PEP data stale, reloading...")
                 pep_engine.load()
                 print("Auto-refresh: PEP updated")
@@ -139,10 +151,10 @@ def status():
         "status": "live",
         "data": {
             "sanctions_records": sanctions_engine.count(),
-            "sanctions_cache_age": cache_age("/tmp/sanctions_v4.json"),
+            "sanctions_cache_age": cache_age(SANCTIONS_CACHE_PATH),
             "sanctions_coverage": "Full consolidated sanctions target list (~70k entities)",
             "pep_records": pep_engine.count(),
-            "pep_cache_age": cache_age("/tmp/peps_v7.json"),
+            "pep_cache_age": cache_age(PEP_CACHE_PATH),
             "pep_coverage": "Partial: prioritised subset of heads of state, "
                              "senior government, and legislative roles. The full "
                              "OpenSanctions PEP dataset exceeds 750,000 entities "
