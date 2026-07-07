@@ -4,8 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import os, json, re
 from screening import SanctionsEngine, PEPEngine, AdverseMediaEngine
+from routes_scenario_lab import router as scenario_lab_router
 
 app = FastAPI(title="FinCrimeRadar API", version="1.0.0")
+app.include_router(scenario_lab_router)
 
 app.add_middleware(
     CORSMiddleware,
