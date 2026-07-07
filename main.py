@@ -11,7 +11,12 @@ app.include_router(scenario_lab_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://fincrimeradar.org", "http://localhost:3000", "*"],
+    # Wildcard removed. A bare "*" here made the two named origins below
+    # meaningless, Starlette's CORS middleware treats "*" as allow every
+    # origin outright, which left /api/screen scrapable from any website
+    # on the internet with zero rate limiting behind it. Only the two
+    # origins that genuinely need to call this API stay listed.
+    allow_origins=["https://fincrimeradar.org", "http://localhost:3000"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -36,7 +41,7 @@ async def startup():
     asyncio.create_task(auto_refresh())
 
 async def auto_refresh():
-    """Background task — checks every hour if data needs refreshing."""
+    """Background task, checks every hour if data needs refreshing."""
     while True:
         await asyncio.sleep(3600)  # check every hour
         try:
