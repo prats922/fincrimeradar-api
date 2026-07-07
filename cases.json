@@ -1,0 +1,146 @@
+[
+  {
+    "case_number": 1,
+    "entity_id": "alpha-corp-001",
+    "name": "Alpha Corp",
+    "title": "Alpha Corp UBO Structure",
+    "briefing": "Alpha Corp has applied for onboarding. Its primary shareholder holds 26 percent through a shell company registered in the British Virgin Islands. Build out the UBO tree to identify all three entities, then screen each one before you decide.",
+    "correct_disposition": [
+      "reject",
+      "request_more_info"
+    ],
+    "rationale": "The 26 percent stake is routed through a British Virgin Islands shell company, and the ultimate beneficial owner returns a possible sanctions match with a mismatched date of birth. Neither fact alone is sufficient justification, together they require rejection or a request for more information.",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Alpha Corp",
+        "type": "applicant",
+        "jurisdiction": "UK",
+        "screening": null
+      },
+      {
+        "id": "n2",
+        "label": "Shell Company",
+        "type": "corporate_shareholder",
+        "jurisdiction": "BVI",
+        "flag": "shell_suspected",
+        "screening": null
+      },
+      {
+        "id": "n3",
+        "label": "Beneficial Owner",
+        "type": "individual",
+        "jurisdiction": "UK",
+        "ownership_pct": 26,
+        "screening": {
+          "match_confidence": 88,
+          "list_source": "UK OFSI",
+          "dob_customer": "1985",
+          "dob_match": "1952",
+          "result": "possible_match"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "n2",
+        "to": "n1",
+        "ownership_pct": 26
+      },
+      {
+        "from": "n3",
+        "to": "n2",
+        "ownership_pct": 100
+      }
+    ]
+  },
+  {
+    "case_number": 2,
+    "entity_id": "retail-customer-002",
+    "name": "Retail Customer",
+    "title": "Document Authenticity Flag",
+    "briefing": "A retail customer has submitted an ID document where the MRZ text font does not match standard passport typography. Identify the customer and screen them, then decide.",
+    "correct_disposition": [
+      "request_more_info"
+    ],
+    "rationale": "Screening returned no match, but a clean screening result does not close an investigation on its own. The document's MRZ typography does not match standard ICAO passport font, an independent authenticity red flag that screening cannot detect.",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Retail Customer",
+        "type": "individual",
+        "jurisdiction": "UK",
+        "flag": "mrz_font_mismatch",
+        "screening": {
+          "match_confidence": 0,
+          "list_source": null,
+          "dob_customer": null,
+          "dob_match": null,
+          "result": "no_match"
+        }
+      }
+    ],
+    "edges": []
+  },
+  {
+    "case_number": 3,
+    "entity_id": "tech-startup-beta-003",
+    "name": "Tech Startup Beta LLC",
+    "title": "Tech Startup Beta LLC",
+    "briefing": "Tech Startup Beta LLC has applied for onboarding, with all UBOs based locally and business operations that match its public profile. Identify every entity and screen each one, then decide.",
+    "correct_disposition": [
+      "approve"
+    ],
+    "rationale": "Both founders are local and fully verified, and business operations match the public profile. Founder B carries a disclosed PEP connection, correctly identified and weighed rather than overlooked, but screening returns clean and the connection presents low risk. Screening every identified entity returns clean, this remains the case where identification and screening clear without qualification, the PEP status is a factor considered, not a blocker.",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Tech Startup Beta LLC",
+        "type": "applicant",
+        "jurisdiction": "UK",
+        "screening": null
+      },
+      {
+        "id": "n2",
+        "label": "Founder A",
+        "type": "individual",
+        "jurisdiction": "UK",
+        "ownership_pct": 55,
+        "screening": {
+          "match_confidence": 0,
+          "list_source": null,
+          "dob_customer": null,
+          "dob_match": null,
+          "result": "no_match"
+        }
+      },
+      {
+        "id": "n3",
+        "label": "Founder B",
+        "type": "individual",
+        "jurisdiction": "UK",
+        "ownership_pct": 45,
+        "screening": {
+          "match_confidence": 0,
+          "list_source": null,
+          "dob_customer": null,
+          "dob_match": null,
+          "result": "no_match",
+          "pep": true
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "n2",
+        "to": "n1",
+        "ownership_pct": 55
+      },
+      {
+        "from": "n3",
+        "to": "n1",
+        "ownership_pct": 45
+      }
+    ]
+  }
+]
