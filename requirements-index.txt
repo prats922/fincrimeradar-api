@@ -1,0 +1,7 @@
+# Offline content-indexing pipeline for the guide chatbot (proof of concept).
+# NOT installed by Render (render.yaml only installs requirements.txt).
+# sentence-transformers pulls in torch, too heavy for the live API's free
+# tier, this runs locally to build guide_index.json, which is what the
+# live API will actually read from once retrieval is wired up.
+beautifulsoup4==4.15.0
+sentence-transformers==5.6.0
