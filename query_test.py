@@ -16,12 +16,27 @@ from sentence_transformers import SentenceTransformer
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "guide_index.json")
 
 SAMPLE_QUESTIONS = [
-    "Can one person hold both the SMF16 and SMF17 roles at a small firm?",
-    "What happens after I submit my Form A to the FCA?",
-    "How does the sanctions and PEP data actually get updated?",
-    "If someone changes their password right before a big purchase, is that suspicious?",
-    "Does a clean screening result mean the customer is definitely safe?",
-    "What's the actual difference between a sanctions hit and a PEP hit?",
+    # UBO Investigation Handbook
+    "How do I identify the ultimate beneficial owner behind layered corporate structures?",
+    # False Positive Playbook
+    "Why do sanctions screening tools generate so many false positives?",
+    # Crypto Guide (mixers/layering, part 3)
+    "How do criminals use crypto mixers and tumblers to launder funds?",
+    # AML Guide (part 1, penalties)
+    "What are the penalties for failing to comply with the UK Money Laundering Regulations?",
+    # Fraud Red Flags, re-confirm post-reindex (tested in session 1)
+    "What are the warning signs of an authorised push payment scam?",
+    # scenario-lab.html tool-context, new source this session
+    "What does Scenario Lab actually train you to do?",
+    # Collision test: UK has no fixed SAR threshold for structuring, unlike
+    # the US CTR's $10,000 line. Fraud Red Flags, AML guide, and SAR guide
+    # all touch structuring, this checks retrieval doesn't blur them or
+    # import a US-style fixed-threshold answer that isn't true for the UK.
+    "Is there a fixed pound threshold that triggers a Suspicious Activity Report for structuring in the UK?",
+    # PEP Guide part 2, new sow-title/sow-desc/sow-eg extraction this session
+    "What's the difference between source of funds and source of wealth for a PEP?",
+    # TM Guide, new source this session (also had simulator/rule-anatomy stripped)
+    "How many false positives does a typical transaction monitoring system generate?",
 ]
 
 
