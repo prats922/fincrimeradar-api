@@ -1,15 +1,15 @@
 """
-Content indexing pipeline, proof of concept (session 1).
+Content indexing pipeline for the guide chatbot.
 
-Parses a small, deliberately mixed set of guide HTML files from the
-fincrimeradar-repo site, strips nav/footer/cheat-sheet/decision-scenario
-markup, extracts clean article prose, chunks it at paragraph level,
-embeds each chunk, and writes chunks + embeddings to a flat JSON file.
+Parses guide HTML files from the fincrimeradar-repo site, strips nav/
+footer/cheat-sheet/decision-scenario/quiz/promo markup, extracts clean
+article prose, chunks it at paragraph level, embeds each chunk, and
+writes chunks + embeddings to a flat JSON file.
 
-Scope: 4 source pages only, to prove the parser handles different HTML
-structures (scenario-based guide, reference page, tool page) before
-indexing the full site. See BACKLOG.md in fincrimeradar-repo, "Guide
-chatbot" entry, for the full-site plan (session 2+).
+Session 1 proved the parser on 4 pages. Session 2 extends it to the
+full site: every remaining guide, screen.html's tool explainer, and
+scenario-lab.html's tool-context copy. See BACKLOG.md in
+fincrimeradar-repo, "Guide chatbot" entry, for both sessions' findings.
 """
 
 import json
@@ -31,7 +31,7 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 # are removed wholesale before prose extraction, they are not article
 # content and would pollute retrieval with UI copy and quiz option text.
 STRIP_CLASSES = [
-    "quiz-q", "quiz-opts", "quiz-feedback",
+    "quiz-q", "quiz-opts", "quiz-feedback", "quiz-explain",
     # dilemma-card wrapper is kept: it holds dilemma-scenario, the actual
     # case narrative prose. Only the interactive picker UI and the
     # JS-populated verdict reveal are stripped out of it.
@@ -43,30 +43,129 @@ STRIP_CLASSES = [
     "cheat-sheet-card", "cheat-sheet-scroll",
     "pull-quote",
     "inline-tool-promo",
+    # Page-level subtitle/tagline directly under a doc-header, e.g.
+    # methodology.html's "Where the data comes from, and how the
+    # screening tool actually works." It's framing copy for the page,
+    # not a retrievable fact, and it has no heading context since it
+    # sits above the first real h2. Logged from session 1 retrieval
+    # testing, where it surfaced as a low-value top-3 result.
+    "highlight",
+    # "Try our screening tool" promo CTA box. Must be stripped wholesale,
+    # not just have its own text excluded: it reuses the tl-title class
+    # from the genuine tl-item timeline pattern below, so if this wrapper
+    # survives, its promo tl-title ("See how MLR screening obligations
+    # work in practice") gets picked up by the heading pass and mislabels
+    # whatever real content follows it.
+    "try-tool",
+    # End-of-guide "you've completed this series" CTA box, same shape as
+    # try-tool (badge, title, blurb, action buttons), promotional rather
+    # than reference content.
+    "series-complete",
+    # Prev/next part navigation chrome ("Part 3 of 3").
+    "part-footer",
+    # Scored interactive alert-triage game (tm-guide.html). Contains
+    # realistic-looking case text, but it's gamified UI (score display,
+    # click-to-resolve buttons) rather than reference prose, same
+    # rationale as self-assess above.
+    "simulator",
+    # Pseudocode rule-engine diagram (tm-guide.html), not natural
+    # language even once extracted.
+    "rule-anatomy",
+    # UI instruction ("Click an item to mark it covered") plus a
+    # disclaimer that's also stated in full by checklist-disclaimer
+    # later in the same box.
+    "checklist-intro",
+    # The "+" toggle icon nested inside every faq-q. Without stripping
+    # this, faq-q's extracted text ends in a stray "+".
+    "faq-icon",
 ]
 STRIP_TAGS = ["script", "style", "nav", "footer", "button", "svg"]
 
-# Prose that lives in <div> elements rather than the standard h2-h4/p/li
-# tags. Heading-role divs update the running "current heading" the same
-# way an h3 would; text-role divs are treated as paragraph chunks.
-DIV_HEADING_CLASSES = {"scenario-name", "step-title"}
-DIV_TEXT_CLASSES = {"step-body", "callout-text", "highlight"}
+# Prose that lives outside the standard h2-h4/p/li tags, in a <div> or
+# <span> instead (a repeated "icon + title + description" card pattern
+# shows up across nearly every guide, under a different class-name
+# prefix per widget: timelines, red-flag cards, case studies, FAQ pairs,
+# checklists, and more). Heading-role elements update the running
+# "current heading" the same way an h3 would; text-role elements are
+# treated as paragraph chunks. Matched regardless of tag name (div or
+# span), see the find_all predicate in extract_chunks.
+DIV_HEADING_CLASSES = {
+    "scenario-name", "step-title",
+    "tl-title",  # genuine timeline items only, try-tool's promo variant is stripped first
+    "offence-name", "oc-title",
+    "me-step-title", "reason-title", "delisting-step-title",
+    "pep-cat-title", "rc-title",
+    "sk-title", "sk-item-title",
+    "rf-title", "mc-title", "sol-title", "ps-title",
+    "rec-title",
+    "type-name",  # <span>, sanctions-compliance-guide.html type cards
+    "sow-title",
+    "case-name",
+    "milestone-title",
+    "flash-term",  # nested inside flash-face.flash-front, precedes flash-face.flash-back
+    "tm-label", "tc-title",
+    "fw-word",
+    "compare-label", "p-label",
+    "checklist-label", "cl-section-title",
+    "archetype-name",
+    "ng-title",
+    "memory-title",
+    "ec-firm",  # <span>, enforcement case-study header e.g. "Major UK bank — AML systems failure"
+    "faq-q",
+}
+DIV_TEXT_CLASSES = {
+    "step-body", "callout-text",
+    "tl-desc", "tl-body",
+    "offence-desc", "oc-desc",
+    "me-step-desc", "reason-desc", "delisting-step-desc",
+    "pep-cat-desc", "rc-desc",
+    "sk-item-desc",
+    "rf-desc", "mc-desc", "sol-desc", "ps-desc",
+    "rec-tagline",
+    "type-detail",
+    "sow-desc", "sow-eg",
+    "case-body",
+    "milestone-desc",
+    "flash-back",
+    "tm-desc", "tc-desc",
+    "fw-desc",
+    "compare-text", "p-desc",
+    "checklist-text", "cl-text", "checklist-disclaimer",
+    "cs-lesson",
+    "memory-text",
+    "humour-text",
+    "peel-chain-caption",
+    "ec-failures", "ec-lesson",
+    "faq-a",
+}
 
 # Each source defines which container(s) hold article prose, and a label
-# used in chunk metadata for citation back to the source page.
+# used in chunk metadata for citation back to the source page. All guide
+# pages use "article-section" as their prose container (confirmed across
+# every file below), only methodology (policy-body), screen.html
+# (toolContextBody), and scenario-lab.html (tool-context) differ.
+ARTICLE_SECTION_GUIDES = [
+    "mlro-handbook-part1", "mlro-handbook-part2",
+    "fraud-red-flags-guide",
+    "aml-guide-part1", "aml-guide-part2", "aml-guide-part3",
+    "crypto-guide-part1", "crypto-guide-part2", "crypto-guide-part3",
+    "crypto-guide-part4", "crypto-guide-part5", "crypto-guide-part6",
+    "fatf-guide-part1", "fatf-guide-part2",
+    "false-positive-playbook", "kyc-onboarding-dilemma",
+    "pep-guide-part1", "pep-guide-part2", "pep-guide-part3",
+    "sanctions-compliance-guide",
+    "sar-guide-part1", "sar-guide-part2", "sar-guide-part3",
+    "screening-alerts-guide", "tm-guide", "ubo-investigation-handbook",
+]
 SOURCES = [
     {
-        "id": "mlro-handbook-part1",
-        "file": "mlro-handbook-part1.html",
-        "url": "/mlro-handbook-part1.html",
+        "id": guide_id,
+        "file": f"{guide_id}.html",
+        "url": f"/{guide_id}.html",
         "select": (True, {"class": "article-section"}),
-    },
-    {
-        "id": "fraud-red-flags-guide",
-        "file": "fraud-red-flags-guide.html",
-        "url": "/fraud-red-flags-guide.html",
-        "select": (True, {"class": "article-section"}),
-    },
+    }
+    for guide_id in ARTICLE_SECTION_GUIDES
+] + [
     {
         "id": "methodology",
         "file": "methodology.html",
@@ -78,6 +177,12 @@ SOURCES = [
         "file": "screen.html",
         "url": "/screen.html#toolContext",
         "select": (True, {"id": "toolContextBody"}),
+    },
+    {
+        "id": "scenario-lab-tool-context",
+        "file": "scenario-lab.html",
+        "url": "/scenario-lab.html",
+        "select": (True, {"class": "tool-context"}),
     },
 ]
 
@@ -107,23 +212,42 @@ def extract_chunks(source):
     chunks = []
     current_heading = None
     for container in containers:
-        # Some prose lives in divs, not p/h2-h4: fraud-red-flags-guide's
+        # Some prose lives outside p/h2-h4 entirely: fraud-red-flags-guide's
         # per-scenario headers are a scenario-num + scenario-name div pair,
-        # and mlro-handbook's approval-process steps use step-title/
-        # step-body divs instead of h3/p. Missing these would silently drop
-        # real article content (the 5-step FCA approval process, in
-        # step-body's case) rather than just mislabeling it.
+        # mlro-handbook's approval-process steps use step-title/step-body
+        # divs, and sanctions-compliance-guide's type cards use a <span
+        # class="type-name"> heading. Missing these would silently drop
+        # real article content rather than just mislabeling it, so the
+        # match is by class, not tag name.
         # A single find_all pass keeps everything in document order, two
-        # separate passes concatenated would put all div matches after all
-        # p/li matches, breaking heading tracking below.
+        # separate passes concatenated would put all class-matched elements
+        # after all p/li matches, breaking heading tracking below.
         matches = container.find_all(lambda t: t.name in ("h2", "h3", "h4", "p", "li")
-                                      or (t.name == "div" and set(t.get("class") or [])
-                                          & (DIV_HEADING_CLASSES | DIV_TEXT_CLASSES)))
+                                      or bool(set(t.get("class") or [])
+                                              & (DIV_HEADING_CLASSES | DIV_TEXT_CLASSES)))
         for el in matches:
+            classes = set(el.get("class") or [])
+            # Some text-role classes (e.g. callout-text) are reused for a
+            # link-list "see also" box in some guides rather than prose,
+            # e.g. crypto-guide-part6's series-navigation callout. A
+            # nested ul/ol is never real prose regardless of which class
+            # wraps it, get_text() would otherwise concatenate the link
+            # labels into one meaningless chunk.
+            if classes & DIV_TEXT_CLASSES and el.find(["ul", "ol"]):
+                continue
+            # <li> is always matched (real bullet lists are common
+            # article content), but a link-list's individual <li>
+            # elements survive that guard independently, each one is
+            # just an <a>, not prose. crypto-guide-part6's series-nav
+            # list leaked 6 separate one-line chunks this way before
+            # this check existed.
+            if el.name == "li":
+                link = el.find("a")
+                if link and normalize_text(el.get_text(" ", strip=True)) == normalize_text(link.get_text(" ", strip=True)):
+                    continue
             text = normalize_text(el.get_text(" ", strip=True))
             if not text:
                 continue
-            classes = set(el.get("class") or [])
             if el.name in ("h2", "h3", "h4") or classes & DIV_HEADING_CLASSES:
                 if "scenario-name" in classes:
                     num_el = el.parent.find(class_="scenario-num")
