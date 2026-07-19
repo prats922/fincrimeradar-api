@@ -5,9 +5,11 @@ from fastapi.responses import JSONResponse
 import os, json, re
 from screening import SanctionsEngine, PEPEngine, AdverseMediaEngine, cache_is_fresh, SANCTIONS_CACHE_PATH, PEP_CACHE_PATH
 from routes_scenario_lab import router as scenario_lab_router
+from routes_guide_chat import router as guide_chat_router
 
 app = FastAPI(title="FinCrimeRadar API", version="1.0.0")
 app.include_router(scenario_lab_router)
+app.include_router(guide_chat_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,9 +17,12 @@ app.add_middleware(
     # meaningless, Starlette's CORS middleware treats "*" as allow every
     # origin outright, which left /api/screen scrapable from any website
     # on the internet with zero rate limiting behind it. Only the two
-    # origins that genuinely need to call this API stay listed.
+    # origins that genuinely need to call this API stay listed. Same
+    # allowlist covers /api/chat, no new origins added for it, POST added
+    # to allow_methods since /api/chat needs it (every other route here is
+    # GET).
     allow_origins=["https://fincrimeradar.org", "https://www.fincrimeradar.org", "http://localhost:3000"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 

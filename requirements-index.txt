@@ -1,7 +1,12 @@
-# Offline content-indexing pipeline for the guide chatbot (proof of concept).
+# Offline content-indexing pipeline for the guide chatbot.
 # NOT installed by Render (render.yaml only installs requirements.txt).
-# sentence-transformers pulls in torch, too heavy for the live API's free
-# tier, this runs locally to build guide_index.json, which is what the
-# live API will actually read from once retrieval is wired up.
+# This is the only package index_guides.py needs beyond requirements.txt
+# (requests and python-dotenv are already there for the live API, and
+# index_guides.py reuses them for its Voyage embedding calls).
+#
+# Session 1/2 used sentence-transformers (local, no API key needed) since
+# this script only ran on a dev machine. Session 3 switched to Voyage so
+# the corpus embeddings share a vector space with the live /api/chat
+# endpoint's query-time embeddings, dropping the torch dependency
+# entirely, it's no longer needed anywhere in this project.
 beautifulsoup4==4.15.0
-sentence-transformers==5.6.0

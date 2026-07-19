@@ -1,17 +1,22 @@
 """
-Retrieval quality test for the guide-chatbot indexing proof of concept.
+Retrieval quality test for the guide chatbot's indexed content.
 
 Loads guide_index.json (built by index_guides.py), embeds a set of sample
-visitor questions, and returns the top 3 most similar chunks by cosine
-similarity. Prints the actual retrieved text, not just a pass/fail, so
-retrieval quality can be judged directly.
+visitor questions via Voyage (matching the corpus's embedding model, see
+index_guides.py's docstring), and returns the top 3 most similar chunks
+by cosine similarity. Prints the actual retrieved text, not just a
+pass/fail, so retrieval quality can be judged directly.
 """
 
 import json
 import os
+import time
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 INDEX_PATH = os.path.join(os.path.dirname(__file__), "guide_index.json")
 
@@ -47,9 +52,36 @@ def load_index():
     return data["model"], data["chunks"], embeddings
 
 
+def embed_query(text, model_name):
+    api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("VOYAGE_API_KEY is not set (or empty) in .env.")
+    for attempt in range(5):
+        response = requests.post(
+            "https://api.voyageai.com/v1/embeddings",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            # input_type="query" pairs with the corpus's
+            # input_type="document", Voyage prepends a different internal
+            # instruction to each side.
+            json={"input": [text], "model": model_name, "input_type": "query"},
+            timeout=30,
+        )
+        if response.status_code == 429:
+            wait = int(response.headers.get("retry-after", 20 * (attempt + 1)))
+            print(f"  rate limited, waiting {wait}s (attempt {attempt + 1}/5)...")
+            time.sleep(wait)
+            continue
+        response.raise_for_status()
+        return np.array(response.json()["data"][0]["embedding"], dtype=np.float32)
+    raise SystemExit("Voyage rate limit persisted after 5 retries, aborting.")
+
+
 def top_k(query_embedding, embeddings, k=3):
-    # Both sides are already L2-normalized (index_guides.py encodes with
-    # normalize_embeddings=True), so a plain dot product is cosine similarity.
+    # Voyage embeddings are normalized to length 1, so a plain dot product
+    # is cosine similarity.
     scores = embeddings @ query_embedding
     top_idx = np.argsort(-scores)[:k]
     return [(int(i), float(scores[i])) for i in top_idx]
@@ -58,10 +90,9 @@ def top_k(query_embedding, embeddings, k=3):
 def main():
     model_name, chunks, embeddings = load_index()
     print(f"Loaded {len(chunks)} chunks, model={model_name}\n")
-    model = SentenceTransformer(model_name)
 
     for question in SAMPLE_QUESTIONS:
-        query_embedding = model.encode(question, normalize_embeddings=True)
+        query_embedding = embed_query(question, model_name)
         results = top_k(query_embedding, embeddings, k=3)
 
         print("=" * 100)

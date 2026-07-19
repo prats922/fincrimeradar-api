@@ -6,25 +6,39 @@ footer/cheat-sheet/decision-scenario/quiz/promo markup, extracts clean
 article prose, chunks it at paragraph level, embeds each chunk, and
 writes chunks + embeddings to a flat JSON file.
 
-Session 1 proved the parser on 4 pages. Session 2 extends it to the
-full site: every remaining guide, screen.html's tool explainer, and
-scenario-lab.html's tool-context copy. See BACKLOG.md in
-fincrimeradar-repo, "Guide chatbot" entry, for both sessions' findings.
+Session 1 proved the parser on 4 pages, embedding locally via
+sentence-transformers since the script only needed to run on a dev
+machine. Session 2 extended parsing to the full site: every remaining
+guide, screen.html's tool explainer, and scenario-lab.html's
+tool-context copy. Session 3 (live /api/chat endpoint) embeds live
+questions via Voyage instead of a local model, to avoid deploying torch
+to Render's free tier, so this script now embeds the corpus via Voyage
+too, corpus and query embeddings must share one vector space or cosine
+similarity is meaningless (and, since Voyage's dimension differs from
+the old local model's, a shape mismatch that would crash outright
+rather than silently misbehave). See BACKLOG.md in fincrimeradar-repo,
+"Guide chatbot" entry, for all sessions' findings.
 """
 
 import json
 import os
 import re
+import time
 
+import requests
 from bs4 import BeautifulSoup
-from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+load_dotenv()
 
 GUIDES_DIR = os.environ.get(
     "GUIDES_DIR",
     os.path.join(os.path.dirname(__file__), "..", "fincrimeradar-repo"),
 )
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "guide_index.json")
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# Must match the model routes_guide_chat.py uses to embed live questions.
+EMBEDDING_MODEL = "voyage-4-lite"
+VOYAGE_BATCH_SIZE = 100
 
 # Classes that mark interactive/non-prose widgets (quizzes, self-assessment
 # tools, decision-scenario diagrams, cheat-sheet SVGs, nav toggles). These
@@ -273,6 +287,49 @@ def normalize_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def embed_texts(texts, input_type):
+    """Embed via Voyage, input_type is "document" for corpus chunks or
+    "query" for a live question, Voyage prepends a different internal
+    instruction for each, using the wrong one for either side degrades
+    retrieval quality even though both still return a same-shaped vector."""
+    api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit(
+            "VOYAGE_API_KEY is not set (or empty) in .env. "
+            "Add the real key to fincrimeradar-api/.env and try again."
+        )
+
+    embeddings = []
+    for i in range(0, len(texts), VOYAGE_BATCH_SIZE):
+        batch = texts[i:i + VOYAGE_BATCH_SIZE]
+        for attempt in range(5):
+            response = requests.post(
+                "https://api.voyageai.com/v1/embeddings",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={"input": batch, "model": EMBEDDING_MODEL, "input_type": input_type},
+                timeout=60,
+            )
+            if response.status_code == 429:
+                # Free-tier rate limit, hit reliably at this corpus size
+                # with VOYAGE_BATCH_SIZE=100. Honor Retry-After when
+                # Voyage sends one, otherwise back off.
+                wait = int(response.headers.get("retry-after", 20 * (attempt + 1)))
+                print(f"  rate limited, waiting {wait}s (attempt {attempt + 1}/5)...")
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+            data = response.json()
+            embeddings.extend(item["embedding"] for item in data["data"])
+            break
+        else:
+            raise SystemExit("Voyage rate limit persisted after 5 retries, aborting.")
+        print(f"  embedded {min(i + VOYAGE_BATCH_SIZE, len(texts))}/{len(texts)}")
+    return embeddings
+
+
 def main():
     print(f"Reading guides from: {os.path.abspath(GUIDES_DIR)}")
     all_chunks = []
@@ -284,16 +341,13 @@ def main():
     if not all_chunks:
         raise SystemExit("No chunks extracted, aborting before embedding.")
 
-    print(f"\nLoading embedding model: {EMBEDDING_MODEL}")
-    model = SentenceTransformer(EMBEDDING_MODEL)
-
-    print(f"Embedding {len(all_chunks)} chunks...")
+    print(f"\nEmbedding {len(all_chunks)} chunks via Voyage ({EMBEDDING_MODEL})...")
     texts = [f"{c['heading']}. {c['text']}" if c["heading"] else c["text"] for c in all_chunks]
-    embeddings = model.encode(texts, show_progress_bar=True, normalize_embeddings=True)
+    embeddings = embed_texts(texts, input_type="document")
 
     for chunk, embedding, chunk_id in zip(all_chunks, embeddings, range(len(all_chunks))):
         chunk["id"] = chunk_id
-        chunk["embedding"] = embedding.tolist()
+        chunk["embedding"] = embedding
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump({
