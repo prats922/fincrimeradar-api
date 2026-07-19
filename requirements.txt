@@ -4,3 +4,4 @@ rapidfuzz==3.9.3
 requests==2.32.3
 python-dotenv==1.0.1
 anthropic==0.117.0
+numpy==2.5.1
