@@ -31,6 +31,7 @@ import requests
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -252,6 +253,27 @@ def _fallback_response() -> ChatResponse:
     )
 
 
+def _service_error_response() -> JSONResponse:
+    # Deliberately distinct from _fallback_response(): a Claude call
+    # failing (auth, rate limit, malformed output) is a real backend
+    # problem, not "this isn't covered in the guides", the "not covered"
+    # text would misrepresent a service outage as a content gap. Same
+    # ChatResponse shape (response + suggested_link) as every other
+    # response, just wrapped in a 503 JSONResponse since returning
+    # ChatResponse normally would carry the route's default 200 status.
+    return JSONResponse(
+        status_code=503,
+        content=ChatResponse(
+            response=(
+                "Something went wrong answering that on our end, this isn't "
+                "about whether the guides cover it. Please try again in a "
+                "moment."
+            ),
+            suggested_link=None,
+        ).model_dump(),
+    )
+
+
 @router.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     if _EMBEDDINGS is None:
@@ -271,7 +293,11 @@ def chat(req: ChatRequest):
         if not page_chunks:
             return _fallback_response()
         context = _format_chunks_as_context(page_chunks)
-        answer = _ask_claude(SUMMARY_SYSTEM_PROMPT, message, context)
+        try:
+            answer = _ask_claude(SUMMARY_SYSTEM_PROMPT, message, context)
+        except Exception as exc:
+            print(f"Guide chat generation error (summary): {exc}")
+            return _service_error_response()
         return ChatResponse(response=answer.response, suggested_link=None)
 
     try:
@@ -288,7 +314,11 @@ def chat(req: ChatRequest):
 
     retrieved = [_CHUNKS[idx] for idx, _score in top]
     context = _format_chunks_as_context(retrieved)
-    answer = _ask_claude(SYSTEM_PROMPT, message, context)
+    try:
+        answer = _ask_claude(SYSTEM_PROMPT, message, context)
+    except Exception as exc:
+        print(f"Guide chat generation error: {exc}")
+        return _service_error_response()
 
     if not answer.answered_from_context:
         return _fallback_response()
