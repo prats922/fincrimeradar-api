@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Query, HTTPException
-import asyncio
+import time
+from collections import deque
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import os, json, re
-from screening import SanctionsEngine, PEPEngine, AdverseMediaEngine, cache_is_fresh, SANCTIONS_CACHE_PATH, PEP_CACHE_PATH
+from screening import ScreeningEngine, AdverseMediaEngine, OPENSANCTIONS_API_KEY
 from routes_scenario_lab import router as scenario_lab_router
 from routes_guide_chat import router as guide_chat_router
 
@@ -26,55 +26,67 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-sanctions_engine = SanctionsEngine()
-pep_engine = PEPEngine()
+screening_engine = ScreeningEngine()
 adverse_engine = AdverseMediaEngine()
+
+# Per-IP rate limiting for /api/screen, same deque-of-timestamps pattern and
+# same x-forwarded-for-aware IP extraction already used by
+# routes_scenario_lab.py's /scenario-lab/cases (mirrored here rather than
+# routes_guide_chat.py's session_id-keyed version, since /api/screen has no
+# session concept, same as scenario-lab's endpoint). Starting number, not a
+# permanent decision: this now calls a real, paid, per-request OpenSanctions
+# API with no free minimum (the CORS comment above already flagged this
+# endpoint as "scrapable from any website on the internet with zero rate
+# limiting behind it" before this fix), so the number is chosen to sit in
+# the same conservative order of magnitude as the established /api/chat cap
+# (20 messages/24h) rather than scenario-lab's looser 60/60s (that endpoint
+# serves static local case data with no external per-call cost). Used as a
+# per-hour window instead of per-day: a real screening session plausibly
+# involves checking multiple names in one sitting (e.g. working through a
+# customer list), which a daily-only cap could exhaust in a single session.
+# Revisit once this endpoint has its own real usage data. Same in-memory,
+# single-process, resets-on-restart tradeoff already accepted for
+# /api/chat and /scenario-lab/cases.
+SCREEN_RATE_LIMIT_MAX = 20
+SCREEN_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
+
+_screen_request_log = {}
+
+
+def _screen_client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _screen_rate_limited(request: Request) -> bool:
+    now = time.monotonic()
+    key = _screen_client_key(request)
+    log = _screen_request_log.setdefault(key, deque())
+
+    while log and now - log[0] > SCREEN_RATE_LIMIT_WINDOW_SECONDS:
+        log.popleft()
+
+    if len(log) >= SCREEN_RATE_LIMIT_MAX:
+        return True
+
+    log.append(now)
+    return False
 
 @app.on_event("startup")
 async def startup():
-    # No longer an unconditional wipe. The previous version cleared every
-    # /tmp/*.json file on every restart before calling load(), which forced
-    # a full re-download and re-parse of both datasets on every cold start
-    # regardless of whether the existing cache was still genuinely fresh,
-    # the exact cost a free-tier host spinning down on inactivity pays on
-    # its very next request. load() itself already checks cache_is_fresh
-    # internally and reads straight from cache when possible, so this step
-    # now only removes a cache file when it has actually gone stale, the
-    # same condition the hourly auto_refresh loop below already checks.
-    print("Loading screening data...")
-    if not cache_is_fresh(SANCTIONS_CACHE_PATH) and os.path.exists(SANCTIONS_CACHE_PATH):
-        try:
-            os.remove(SANCTIONS_CACHE_PATH)
-            print(f"Cleared stale sanctions cache: {SANCTIONS_CACHE_PATH}")
-        except OSError as e:
-            print(f"Could not remove stale sanctions cache: {e}")
-    if not cache_is_fresh(PEP_CACHE_PATH) and os.path.exists(PEP_CACHE_PATH):
-        try:
-            os.remove(PEP_CACHE_PATH)
-            print(f"Cleared stale PEP cache: {PEP_CACHE_PATH}")
-        except OSError as e:
-            print(f"Could not remove stale PEP cache: {e}")
-
-    pep_engine.load()
-    sanctions_engine.load()
-    print("Screening engines ready.")
-    asyncio.create_task(auto_refresh())
-
-async def auto_refresh():
-    """Background task, checks every hour if data needs refreshing."""
-    while True:
-        await asyncio.sleep(3600)  # check every hour
-        try:
-            if not cache_is_fresh(SANCTIONS_CACHE_PATH):
-                print("Auto-refresh: sanctions data stale, reloading...")
-                sanctions_engine.load()
-                print("Auto-refresh: sanctions updated")
-            if not cache_is_fresh(PEP_CACHE_PATH):
-                print("Auto-refresh: PEP data stale, reloading...")
-                pep_engine.load()
-                print("Auto-refresh: PEP updated")
-        except Exception as e:
-            print(f"Auto-refresh error: {e}")
+    # No bulk dataset to load anymore, sanctions and PEP screening now call
+    # OpenSanctions' authenticated /match/default per request (see
+    # screening.py's ScreeningEngine), replacing the old bulk-download-and-
+    # cache architecture entirely. The only startup-relevant check left is
+    # whether the API key is actually configured, since a missing key would
+    # otherwise fail silently on the first real search instead of being
+    # visible in the startup log.
+    if not OPENSANCTIONS_API_KEY:
+        print("WARNING: OPENSANCTIONS_API_KEY is not set, sanctions/PEP screening will return no results")
+    else:
+        print("OpenSanctions API key configured, screening ready.")
 
 @app.get("/")
 def root():
@@ -82,10 +94,17 @@ def root():
 
 @app.get("/api/screen")
 def screen(
+    request: Request,
     q: str = Query(..., min_length=2, description="Name or entity to screen"),
     type: str = Query("all", description="all | sanctions | pep | adverse"),
     threshold: int = Query(80, ge=50, le=100, description="Match threshold 50-100")
 ):
+    if _screen_rate_limited(request):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Screening limit reached ({SCREEN_RATE_LIMIT_MAX} per hour). Try again later.",
+        )
+
     query = q.strip()
     results = {
         "query": query,
@@ -96,11 +115,17 @@ def screen(
         "summary": {}
     }
 
-    if type in ("all", "sanctions"):
-        results["sanctions"] = sanctions_engine.search(query, threshold)
-
-    if type in ("all", "pep"):
-        results["pep"] = pep_engine.search(query, threshold)
+    if type in ("all", "sanctions", "pep"):
+        # One call serves both, confirmed 2026-07-20 that a two-named-query
+        # /match/default request bills as a single request regardless of
+        # `type`, so this always fetches both even when only one is
+        # requested, rather than risking two billed calls if this were ever
+        # split into two conditional fetches.
+        sanctions, pep = screening_engine.screen(query, threshold)
+        if type in ("all", "sanctions"):
+            results["sanctions"] = sanctions
+        if type in ("all", "pep"):
+            results["pep"] = pep
 
     if type in ("all", "adverse"):
         results["adverse_media"] = adverse_engine.search(query)
@@ -134,44 +159,27 @@ def screen(
 def health():
     return {
         "status": "ok",
-        "sanctions_records": sanctions_engine.count(),
-        "pep_records": pep_engine.count(),
+        "screening_backend": "opensanctions_api",
+        "api_key_configured": bool(OPENSANCTIONS_API_KEY),
     }
 
 @app.get("/api/status")
 def status():
-    import os
-    from datetime import datetime
-    def cache_age(path):
-        if not os.path.exists(path): return "not cached"
-        modified = datetime.fromtimestamp(os.path.getmtime(path))
-        age = datetime.now() - modified
-        hours = age.seconds // 3600
-        mins = (age.seconds % 3600) // 60
-        return f"{hours}h {mins}m ago"
-
     return {
         "service": "FinCrimeRadar API",
         "version": "1.0.0",
         "status": "live",
         "data": {
-            "sanctions_records": sanctions_engine.count(),
-            "sanctions_cache_age": cache_age(SANCTIONS_CACHE_PATH),
-            "sanctions_coverage": "Full consolidated sanctions target list (~70k entities)",
-            "pep_records": pep_engine.count(),
-            "pep_cache_age": cache_age(PEP_CACHE_PATH),
-            "pep_coverage": "Partial: prioritised subset of heads of state, "
-                             "senior government, and legislative roles. The full "
-                             "OpenSanctions PEP dataset exceeds 750,000 entities "
-                             "and is too large to host in full on this free tier. "
-                             "Lower-profile regional/municipal PEPs may not be "
-                             "covered. Always verify against official sources.",
-            "cache_ttl_hours": 24,
+            "screening_backend": "OpenSanctions authenticated /match/default API, "
+                                  "live per-request, no bulk dataset held locally, "
+                                  "no cache to go stale.",
+            "api_key_configured": bool(OPENSANCTIONS_API_KEY),
+            "sanctions_coverage": "Full OpenSanctions default collection, sanctions "
+                                   "and PEP, split by topic per result. See methodology.html.",
             "adverse_media": "live RSS (no cache)",
         },
         "sources": [
-            "OpenSanctions (OFAC, UN, EU, OFSI, 40+ lists)",
-            "OpenSanctions PEP dataset (partial coverage, see pep_coverage)",
+            "OpenSanctions (OFAC, UN, EU, OFSI, 40+ lists, and PEP data), live API",
             "BBC, OCCRP, AP, DW, Al Jazeera (RSS)",
         ]
     }
