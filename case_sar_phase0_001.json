@@ -1,0 +1,43 @@
+{
+  "case_id": "sar-phase0-001",
+  "title": "The Consultancy Invoice Loop",
+  "module": "sar-sandbox",
+  "subject": {
+    "entity_name": "Meridian Trade Solutions Ltd",
+    "entity_type": "UK private limited company",
+    "account_type": "Business current account",
+    "account_opened": "2026-06-02",
+    "declared_business": "Import export consultancy, stated annual turnover under 250,000 GBP",
+    "director": "Composite individual, UK resident, sole person with significant control on record"
+  },
+  "activity_window": { "start": "2026-06-09", "end": "2026-06-19" },
+  "transactions": [
+    { "date": "2026-06-09", "from": "Aldergate Consulting Services Ltd", "amount_gbp": 9450, "description": "Consultancy fee" },
+    { "date": "2026-06-13", "from": "Northfield Business Advisory Ltd", "amount_gbp": 9680, "description": "Consultancy fee" },
+    { "date": "2026-06-17", "from": "Priory Commercial Services Ltd", "amount_gbp": 9520, "description": "Consultancy fee" }
+  ],
+  "onward_movement": {
+    "pattern": "Each incoming payment transferred onward within 48 hours to a single personal account held overseas",
+    "destination_note": "Overseas jurisdiction with limited public beneficial ownership transparency, receiving account holder is not a signatory on Meridian's business account",
+    "total_moved_gbp": 28650
+  },
+  "supporting_facts": [
+    "All three sending companies were incorporated within an 11 day window of each other in May 2026",
+    "Two of the three sending companies share a registered office address, neither has an independently verifiable trading website",
+    "No invoices, contracts or engagement letters were provided when the relationship manager requested them",
+    "Meridian's account had no trading history prior to these receipts, despite being open since 2026-06-02",
+    "Each payment fell just below the firm's internal 10,000 GBP enhanced review trigger"
+  ],
+  "red_flags": [
+    { "id": "rf1", "label": "Multiple related senders, each below the internal review threshold" },
+    { "id": "rf2", "label": "No commercial documentation despite request" },
+    { "id": "rf3", "label": "Rapid onward transfer inconsistent with normal business cash flow" },
+    { "id": "rf4", "label": "No trading history matching the declared business activity" },
+    { "id": "rf5", "label": "Destination account in a jurisdiction with limited beneficial ownership transparency" },
+    { "id": "rf6", "label": "Senders incorporated in a narrow window, shared registered address" }
+  ],
+  "distractor_facts": [
+    "Meridian's director has held a personal UK bank account with the same firm for 9 years with no prior alerts",
+    "The registered office address used by two senders belongs to a legitimate accountancy firm used by several genuine clients"
+  ]
+}

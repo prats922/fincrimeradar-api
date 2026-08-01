@@ -6,10 +6,12 @@ from fastapi.responses import JSONResponse
 from screening import ScreeningEngine, AdverseMediaEngine, OPENSANCTIONS_API_KEY
 from routes_scenario_lab import router as scenario_lab_router
 from routes_guide_chat import router as guide_chat_router
+from routes_sar_sandbox import router as sar_sandbox_router
 
 app = FastAPI(title="FinCrimeRadar API", version="1.0.0")
 app.include_router(scenario_lab_router)
 app.include_router(guide_chat_router)
+app.include_router(sar_sandbox_router)
 
 app.add_middleware(
     CORSMiddleware,
