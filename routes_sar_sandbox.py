@@ -429,6 +429,16 @@ def _extract_with_consistency(case: dict, req: ExtractRequest) -> dict:
     return merged
 
 
+@router.get("/api/sar-sandbox/cases")
+def list_cases():
+    """Whitelist of case_id and title only, for the frontend case picker.
+    No rate limit, same reasoning as get_case below: non-sensitive data
+    that's already part of get_case_display's whitelist."""
+    return JSONResponse(
+        content=[{"case_id": case["case_id"], "title": case["title"]} for case in _CASES_CACHE.values()]
+    )
+
+
 @router.get("/api/sar-sandbox/case/{case_id}")
 def get_case(case_id: str):
     display = get_case_display(case_id)
