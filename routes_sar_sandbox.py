@@ -10,12 +10,16 @@ distractor_facts, the answer key. It is for server side use only, inside
 the Phase 3 extraction/scoring call. It must never be returned in any API
 response.
 
-get_case_display() is a whitelist, not a blacklist. It names the five
-fields sent to the browser explicitly: subject, activity_window,
-transactions, onward_movement, supporting_facts. This data is the answer
-key for a training tool, so exclude by default is the only acceptable
-behaviour, a field added to the case JSON later must stay excluded until
-someone deliberately adds it to this list.
+get_case_display() is a whitelist, not a blacklist. It names the six
+fields sent to the browser explicitly: title, subject, activity_window,
+transactions, onward_movement, supporting_facts. title was added when
+the frontend needed a heading fallback for cases whose subject has no
+single named-entity field (e.g. a personal account case), it is cosmetic
+and carries no scoring information, unlike every other field on this
+list it was never part of the answer key concern. This data is the
+answer key for a training tool, so exclude by default is the only
+acceptable behaviour, a field added to the case JSON later must stay
+excluded until someone deliberately adds it to this list.
 """
 
 import json
@@ -31,18 +35,26 @@ from pydantic import BaseModel, Field, ValidationError
 
 load_dotenv()
 
-CASE_PATH = Path(__file__).parent / "case_sar_phase0_001.json"
+# Scans for every case_sar_*.json in this directory rather than a single
+# hardcoded filename, per the Phase 8 audit finding, one file per case, flat
+# convention, no per-file registration needed to add a new one.
+CASE_DIR = Path(__file__).parent
+CASE_GLOB = "case_sar_*.json"
 
 
 def _load_cases():
-    if not CASE_PATH.exists():
+    case_paths = sorted(CASE_DIR.glob(CASE_GLOB))
+    if not case_paths:
         raise FileNotFoundError(
-            f"{CASE_PATH.name} not found at {CASE_PATH}. Confirm it was "
-            "committed alongside this route module."
+            f"No files matching {CASE_GLOB!r} found in {CASE_DIR}. Confirm at "
+            "least case_sar_phase0_001.json was committed alongside this route module."
         )
-    with open(CASE_PATH, "r", encoding="utf-8") as f:
-        case = json.load(f)
-    return {case["case_id"]: case}
+    cases = {}
+    for path in case_paths:
+        with open(path, "r", encoding="utf-8") as f:
+            case = json.load(f)
+        cases[case["case_id"]] = case
+    return cases
 
 
 # Load once at import time, not per call, matching routes_scenario_lab.py's
@@ -69,6 +81,7 @@ def get_case_display(case_id: str) -> dict | None:
     if case is None:
         return None
     return {
+        "title": case["title"],
         "subject": case["subject"],
         "activity_window": case["activity_window"],
         "transactions": case["transactions"],

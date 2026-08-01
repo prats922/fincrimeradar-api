@@ -1,0 +1,41 @@
+{
+  "case_id": "sar-002",
+  "title": "The Weekend Courier",
+  "module": "sar-sandbox",
+  "subject": {
+    "customer_type": "Personal current account customer",
+    "account_opened": "2019-03-11",
+    "declared_circumstances": "Part-time retail employment, declared income around 18,000 GBP per year",
+    "established_profile": "A single monthly salary credit of approximately 1,450 GBP from a named employer, no other regular income, stable and unremarkable balance for six years prior to this activity window"
+  },
+  "activity_window": { "start": "2026-06-22", "end": "2026-07-02" },
+  "transactions": [
+    { "date": "2026-06-22", "from": "S. Turner", "amount_gbp": 480, "description": "Faster Payment, reference: loan repayment" },
+    { "date": "2026-06-25", "from": "L. Ford", "amount_gbp": 620, "description": "Faster Payment, reference: gift" },
+    { "date": "2026-06-29", "from": "K. Bryant", "amount_gbp": 550, "description": "Faster Payment, no reference given" },
+    { "date": "2026-07-02", "from": "D. Whitmore", "amount_gbp": 710, "description": "Faster Payment, reference: repayment" }
+  ],
+  "onward_movement": {
+    "pattern": "Each incoming payment was followed within two to four hours by either an ATM cash withdrawal or a card payment, consuming most of the balance each time",
+    "destination_note": "A mix of cash withdrawals and card spend, no single onward account or destination, only a small residual balance under 10 percent of each credit left behind after every cycle",
+    "total_moved_gbp": 2360
+  },
+  "supporting_facts": [
+    "None of the four senders share a name, address, or any apparent connection with the account holder or with each other, based on account name matching alone",
+    "The account holder's declared occupation and income give no known basis for receiving third-party payments of this kind",
+    "When asked informally by a branch staff member about one of the payments, the account holder described it only as 'a friend paying me back', with no further detail offered",
+    "The account has held a stable balance with no prior large or third-party-sourced credits for the six years before this activity window"
+  ],
+  "red_flags": [
+    { "id": "rfA", "label": "Sudden activity inconsistent with the account's established profile" },
+    { "id": "rfB", "label": "Multiple unrelated third-party senders with no apparent personal or financial connection to the account holder" },
+    { "id": "rfC", "label": "Rapid, near-immediate withdrawal or spend following each credit, consistent with a pass-through pattern" },
+    { "id": "rfD", "label": "Only a small residual balance retained after each cycle, consistent with a commission-style pattern" },
+    { "id": "rfE", "label": "Vague or unsubstantiated explanation offered when asked about the payments" },
+    { "id": "rfF", "label": "Senders and disposal method dispersed in a way inconsistent with the account holder's stated circumstances" }
+  ],
+  "distractor_facts": [
+    "The account holder posted several items for sale on an online marketplace during the same month, a plausible partial explanation for at least one of the smaller payments",
+    "The account holder has held the same address and mobile number for over six years, with no other indicators of identity compromise"
+  ]
+}
