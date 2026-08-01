@@ -451,12 +451,4 @@ def extract(req: ExtractRequest, request: Request):
     extraction_dict = _verify_quotes(extraction_dict, req)
     scoring = score_extraction(extraction_dict, case["red_flags"])
 
-    # TEMP: Phase 7 live deployment check, confirms _extract_request_log
-    # persists across requests on the live Render process rather than
-    # resetting per-request. Revert this header after the check.
-    debug_count = len(_extract_request_log.get(_extract_client_key(request), []))
-
-    return JSONResponse(
-        content={"extraction": extraction_dict, "scoring": scoring},
-        headers={"X-Sar-Sandbox-Debug-Count": str(debug_count)},
-    )
+    return JSONResponse(content={"extraction": extraction_dict, "scoring": scoring})
